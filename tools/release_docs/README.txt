@@ -141,8 +141,9 @@ can use either kind.
 GOOD TO KNOW
 ------------
 
-- Each copy is a snapshot of your Retro Rewind. When Retro Rewind updates, wait for
-  a new SplitScreen8 release; the setup refuses a Retro Rewind it was not built for.
+- This release is built on Retro Rewind 6.13.3, and later Retro Rewind versions may
+  not get a release of their own. The setup makes its copy from 6.13.3, downloading
+  it when yours is another version, so your own Retro Rewind can keep updating.
 - The Retro Rewind build is offline only. Play online from your own Retro Rewind.
 - In the Retro Rewind build with 5 to 8 players, Mystic Tangle is left out, and
   Battle Royale leaves out the biggest tracks. They show greyed out.
