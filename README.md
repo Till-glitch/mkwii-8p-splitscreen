@@ -1,6 +1,6 @@
 # MKWii 8P Splitscreen: 5 to 8 player local splitscreen for Mario Kart Wii
 
-![Eight players racing on Baby Park](https://github.com/therenow9/mkwii-8p-splitscreen/releases/download/v1.0.0/01-8p-babypark.jpg)
+![Eight players racing on Baby Park](https://github.com/user-attachments/assets/cb7c8f56-158c-4823-a301-fb3543c8c36e)
 
 ## Intro
 Hi, I am a Software Engineer and video game hobbyist, I grew up on Mario Kart Wii and Nintendo games, I made this mod so my brother
@@ -46,10 +46,10 @@ for building from source.
   differences: the main menu's 2 to 8 Players buttons, no Retro WFC, and the same-character OK markers among them.
 
 <p>
-<img src="https://github.com/therenow9/mkwii-8p-splitscreen/releases/download/v1.0.0/07-join-8.jpg" width="49%" alt="The join page with eight controllers">
-<img src="https://github.com/therenow9/mkwii-8p-splitscreen/releases/download/v1.0.0/08-character-8.jpg" width="49%" alt="The character page with eight picks">
-<img src="https://github.com/therenow9/mkwii-8p-splitscreen/releases/download/v1.0.0/11-8p-team.jpg" width="49%" alt="Team VS with eight players on Rainbow Road">
-<img src="https://github.com/therenow9/mkwii-8p-splitscreen/releases/download/v1.0.0/04-v-8p-coconutmall.jpg" width="49%" alt="The Mario Kart Wii build, eight players on Coconut Mall">
+<img src="https://github.com/user-attachments/assets/28b1d826-2c75-481e-a6b4-e3fbab6222e1" width="49%" alt="The join page with eight controllers">
+<img src="https://github.com/user-attachments/assets/5de06b55-4953-413e-8712-cd23ead09b77" width="49%" alt="The character page with eight picks">
+<img src="https://github.com/user-attachments/assets/8829bf0b-4657-4178-b47b-8bb704c1a69a" width="49%" alt="Team VS with eight players on Rainbow Road">
+<img src="https://github.com/user-attachments/assets/ac8f40fa-0fdd-4287-9f5a-7fe383e9418a" width="49%" alt="The Mario Kart Wii build, eight players on Coconut Mall">
 </p>
 
 ## How it fits together
