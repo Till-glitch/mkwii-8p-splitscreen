@@ -260,6 +260,7 @@ def install(args: argparse.Namespace) -> int:
             if i8.repair_wiicompiled(layout) if log == "repair" else i8.install_wiicompiled(layout, payload / "WiiCompiled-Setup.exe"):
                 sys.exit(f"WiiCompiled's setup failed for {folder}; its log is %TEMP%\\WiiCompiled-{log}.log")
             i8.copy_file(layout, i8.ROOT / "tools" / "release_docs" / "wii-wheel.rgba", layout.wc_userdata / "window-icon.rgba")
+            i8.guard(layout, layout.wc_userdata / "window-title.txt").write_text(f"{folder} - 8 Player Splitscreen", encoding="utf-8")
             plays["Play (WiiCompiled).cmd"] = f'"{layout.wc_install / "WiiCompiled-Setup.exe"}" --launch-retro'
         print(f"[step] {folder}, menus and code")
         i8.cmd_code(layout, step)
