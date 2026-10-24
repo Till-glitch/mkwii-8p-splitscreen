@@ -29,3 +29,10 @@ Loader.pul
 
 # Local configuration
 .env
+
+# ESP32 build products and local bridge configuration/recordings
+firmware/**/.pio/
+firmware/**/platformio.local.ini
+.wiimote-bridge.json
+*.wiimote-recording.jsonl
+tools/wiimote_bridge/.local/

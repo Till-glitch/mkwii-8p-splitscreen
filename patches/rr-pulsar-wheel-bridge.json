@@ -1,0 +1,16 @@
+{
+  "format_version": 1,
+  "base_commit": "a9594663478325ca68ab8e8c3cf7fd332524e821",
+  "patch_sha256": "972d832164413a249a048cbc35f830326c3afcd98af812870266fd7d53106a2b",
+  "paths": [
+    "GameSource/symbols.txt",
+    "PulsarEngine/SplitScreen8/Input.cpp",
+    "PulsarEngine/SplitScreen8/Join.cpp",
+    "PulsarEngine/SplitScreen8/WheelBridge.cpp",
+    "PulsarEngine/SplitScreen8/WheelBridge.hpp"
+  ],
+  "new_files": [
+    "PulsarEngine/SplitScreen8/WheelBridge.cpp",
+    "PulsarEngine/SplitScreen8/WheelBridge.hpp"
+  ]
+}

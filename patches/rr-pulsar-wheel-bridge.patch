@@ -1,0 +1,371 @@
+diff --git a/GameSource/symbols.txt b/GameSource/symbols.txt
+index 4490db48..93a9e702 100644
+--- a/GameSource/symbols.txt
++++ b/GameSource/symbols.txt
+@@ -2861,3 +2861,5 @@ wipeControlDtor = 0x80651c48
+ layoutControlDtor = 0x8063d8c0
+ wipeAnims = 0x80899f18
+ multiPlayerMovies = 0x808addfc
++__ct__Q25Input10ControllerFv = 0x8051eba8
++__dt__Q25Input10ControllerFv = 0x8051f1ec
+diff --git a/PulsarEngine/SplitScreen8/Input.cpp b/PulsarEngine/SplitScreen8/Input.cpp
+index bdf52435..554ae24e 100644
+--- a/PulsarEngine/SplitScreen8/Input.cpp
++++ b/PulsarEngine/SplitScreen8/Input.cpp
+@@ -2,6 +2,9 @@
+ #include <MarioKartWii/Input/InputManager.hpp>
+ #include <MarioKartWii/UI/Section/SectionMgr.hpp>
+ #include <SplitScreen8/SplitScreen8.hpp>
++#ifdef SS8_WHEEL_BRIDGE
++#include <SplitScreen8/WheelBridge.hpp>
++#endif
+ 
+ // Holders 4-7 follow Input::Manager's own 0x415C bytes: holder id is mgr + 4 + id * 0xEC, plus kExtGap for ids 4+,
+ // because index 4 of the game's array is the first AIControllerHolder.
+@@ -75,6 +78,9 @@ kmCall(0x8052316c, ConstructExtHoldersStub);
+ // Per frame, after Update's loop over holders 0-3 (bound at 0x80523954), with the same pause flag:
+ // those a race of more than 4 locals uses, and those a 5-8 player game's menus join (Join.cpp).
+ static void UpdateExtHolders(Input::Manager *input) {
++#ifdef SS8_WHEEL_BRIDGE
++    UpdateWheelBridge();
++#endif
+     const u32 count = raceLocalCount > menuLocalCount ? raceLocalCount : menuLocalCount;
+     for (u32 id = kGameLocal; id < count; ++id) Holder(*input, id).Update(input->isPaused);
+ }
+diff --git a/PulsarEngine/SplitScreen8/Join.cpp b/PulsarEngine/SplitScreen8/Join.cpp
+index 3dfbe58b..fa06ad17 100644
+--- a/PulsarEngine/SplitScreen8/Join.cpp
++++ b/PulsarEngine/SplitScreen8/Join.cpp
+@@ -9,6 +9,9 @@
+ #include <MarioKartWii/Scene/GameScene.hpp>
+ #include <UI/UI.hpp>
+ #include <SplitScreen8/SplitScreen8.hpp>
++#ifdef SS8_WHEEL_BRIDGE
++#include <SplitScreen8/WheelBridge.hpp>
++#endif
+ 
+ // In place of RegisteredPads and RegisterPad, whose PadControl[4] and prompts stop at 4: P2-4 join through
+ // SectionPad's RequestPad, P5-8 through extPads and TrySetController on holders 4-7.
+@@ -268,11 +271,29 @@ static void TakePad(u32 slot) {
+     if (!pad.waiting)
+         return;
+     trySetController(Input::Manager::sInstance, slot, 0);
+-    const u32 id = calculateID(&SlotHolder(slot));
+-    if (id == 0)
++    u32 id = calculateID(&SlotHolder(slot));
++    if (id != 0) {
++        pad.id = id;
++        pad.waiting = false;
+         return;
+-    pad.id = id;
+-    pad.waiting = false;
++    }
++#ifdef SS8_WHEEL_BRIDGE
++    const u32 bridgeSlot = slot - kGameLocal;
++    if (bridgeSlot < 4) {
++        BridgeWheelController &bridge = GetBridgeController(bridgeSlot);
++        if (bridge.IsFresh() && bridge.HasConfirm()) {
++            Input::RealControllerHolder &holder = SlotHolder(slot);
++            BindPad(holder, &bridge);
++            id = calculateID(&holder);
++            if (id != 0) {
++                pad.id = id;
++                pad.waiting = false;
++                pad.controller = &bridge;
++                return;
++            }
++        }
++    }
++#endif
+ }
+ 
+ // The slot empties and stops waiting; its holder drops to the dummy controller.
+diff --git "a/PulsarEngine/SplitScreen8/WheelBridge.cpp" "b/PulsarEngine/SplitScreen8/WheelBridge.cpp"
+new file mode 100644
+--- /dev/null
++++ "b/PulsarEngine/SplitScreen8/WheelBridge.cpp"
+@@ -0,0 +1,235 @@
++#ifdef SS8_WHEEL_BRIDGE
++#include <kamek.hpp>
++#include <core/rvl/OS/OS.hpp>
++#include <core/rvl/WPAD.hpp>
++#include <MarioKartWii/Input/InputManager.hpp>
++#include <SplitScreen8/SplitScreen8.hpp>
++#include <SplitScreen8/WheelBridge.hpp>
++#include <core/egg/mem/Heap.hpp>
++#include <wheel_bridge_mailbox.h>
++#include <wheel_bridge_build.h>
++
++namespace SplitScreen8 {
++namespace {
++using namespace WiiBridgeMailbox;
++static u32 inputStorage[INPUT_SIZE / 4];
++static u32 statusStorage[STATUS_SIZE / 4];
++static u8 descriptor[DESCRIPTOR_SIZE];
++static Receiver receiver;
++static bool initialized;
++static u32 lastGeneration, statusGeneration;
++static u32 sBridgeControllersStorage[(sizeof(BridgeWheelController) * 4 + 3) / 4];
++static BridgeWheelController* sBridgeControllers = reinterpret_cast<BridgeWheelController*>(sBridgeControllersStorage);
++
++static void MemoryBarrier() {
++    asm { sync }
++}
++static u32 ReadGeneration(const volatile u8* source) {
++    return (u32(source[0]) << 24) | (u32(source[1]) << 16) | (u32(source[2]) << 8) | source[3];
++}
++static void PublishStatus() {
++    u8 copy[STATUS_SIZE];
++    statusGeneration += 2;
++    receiver.WriteStatus(copy, statusGeneration);
++
++    u32 boundMask = 0;
++    Input::Manager *input = Input::Manager::sInstance;
++    if (input != nullptr) {
++        for (u32 i = 0; i < 4; ++i) {
++            const u32 slot = kGameLocal + i;
++            if (extPads[i].id != 0 && Holder(*input, slot).curController == &sBridgeControllers[i]) {
++                boundMask |= (1 << slot);
++            }
++        }
++    }
++    Write32(copy + 64, boundMask);
++    Write32(copy + 92, Crc32(copy + 4, 88));
++
++    volatile u8* target = reinterpret_cast<volatile u8*>(statusStorage);
++    const u32 odd = statusGeneration - 1;
++    for (u32 i = 0; i < 4; ++i) target[i] = u8(odd >> (24 - 8 * i));
++    MemoryBarrier();
++    for (u32 i = 4; i < STATUS_SIZE; ++i) target[i] = copy[i];
++    MemoryBarrier();
++    for (u32 i = 0; i < 4; ++i) target[i] = copy[i];
++}
++static void Initialize(u32 nowMs) {
++    const u32 session = (OS::GetTick() ^ u32(inputStorage)) | 1;
++    receiver.Reset(session);
++    Clear(descriptor, sizeof(descriptor));
++    const char magic[8] = {'S','S','8','W','B','R','G','1'};
++    for (u32 i = 0; i < 8; ++i) descriptor[i] = magic[i];
++    Write16(descriptor + 8, ABI_VERSION); Write16(descriptor + 10, DESCRIPTOR_SIZE);
++    Write32(descriptor + 12, CAP_DIAGNOSTIC | CAP_WHEEL_INPUT);
++    const u8 buildId[16] = {SS8_WHEEL_BUILD_ID};
++    for (u32 i = 0; i < 16; ++i) descriptor[16 + i] = buildId[i];
++    Write32(descriptor + 32, session); Write32(descriptor + 36, u32(inputStorage));
++    Write32(descriptor + 40, INPUT_SIZE); Write32(descriptor + 44, u32(statusStorage));
++    Write32(descriptor + 48, STATUS_SIZE); Write16(descriptor + 52, 4);
++    Write32(descriptor + 56, 1); Write32(descriptor + 60, Crc32(descriptor, 60));
++
++    for (u32 i = 0; i < 4; ++i) {
++        new (&sBridgeControllers[i]) BridgeWheelController();
++        sBridgeControllers[i].SetSlot(i);
++    }
++
++    MemoryBarrier();
++    initialized = true;
++    OS::Report("ss8 wheel bridge: descriptor=%08x session=%08x abi=1 cap=3\n", descriptor, session);
++    (void)nowMs;
++}
++}
++
++BridgeWheelController::BridgeWheelController() : slotId(0) {
++    this->isDriftAuto = false;
++    this->hasError = false;
++    this->battery = 4;
++}
++
++BridgeWheelController::~BridgeWheelController() {}
++
++void BridgeWheelController::SetSlot(u32 slot) {
++    this->slotId = slot;
++}
++
++bool BridgeWheelController::IsFresh() const {
++    if (!initialized || !receiver.active || slotId >= 4) return false;
++    const SnapshotSlot &slot = receiver.slots[slotId];
++    return receiver.hasSample[slotId] &&
++           ((slot.flags & (FLAG_CONNECTED | FLAG_SAMPLE_VALID)) == (FLAG_CONNECTED | FLAG_SAMPLE_VALID)) &&
++           !(slot.flags & FLAG_EVENT_OVERFLOW);
++}
++
++bool BridgeWheelController::HasConfirm() const {
++    if (!IsFresh()) return false;
++    const SnapshotSlot &slot = receiver.slots[slotId];
++    return (slot.buttons & (WPAD::WPAD_BUTTON_2 | WPAD::WPAD_BUTTON_A)) != 0;
++}
++
++void BridgeWheelController::UpdateImpl(Input::State &state, Input::UIState &uiState) {
++    state.buttonActions = 0;
++    state.buttonRaw = 0;
++    state.stick.x = 0.0f;
++    state.stick.z = 0.0f;
++    state.quantisedStickX = 7;
++    state.quantisedStickY = 7;
++    state.motionControlFlick = 0;
++    state.motionControlFlickUnmirrored = 0;
++
++    uiState.buttonActions = 0;
++    uiState.rawButtons = 0;
++    uiState.stickX = 0.0f;
++    uiState.stickY = 0.0f;
++    uiState.quantisedStickX = 7;
++    uiState.quantisedStickY = 7;
++
++    if (!IsFresh()) return;
++
++    const SnapshotSlot &slot = receiver.slots[slotId];
++    const u16 buttons = slot.buttons;
++
++    // Steering from accelerometer: 128 units = 1g.
++    float steer = 0.0f;
++    const int rawX = slot.accelX;
++    if (rawX < -8 || rawX > 8) {
++        steer = float(rawX) / 100.0f;
++        if (steer < -1.0f) steer = -1.0f;
++        if (steer > 1.0f) steer = 1.0f;
++    }
++    const int qX = 7 + int(steer * 7.0f + (steer >= 0.0f ? 0.5f : -0.5f));
++    const u8 quantX = u8(qX < 0 ? 0 : (qX > 14 ? 14 : qX));
++
++    state.quantisedStickX = quantX;
++    state.stick.x = float(int(quantX) - 7) / 7.0f;
++    state.buttonRaw = buttons;
++
++    // Physical gameplay buttons (State)
++    if (buttons & WPAD::WPAD_BUTTON_2) {
++        state.buttonActions |= 0x1;  // Accelerate
++    }
++    if (buttons & WPAD::WPAD_BUTTON_1) {
++        state.buttonActions |= 0x2;  // Brake / Reverse
++    }
++    if (buttons & 0x000F) {
++        state.buttonActions |= 0x4;  // Item (D-Pad direction)
++    }
++    if (buttons & WPAD::WPAD_BUTTON_B) {
++        if (!this->isDriftAuto) {
++            state.buttonActions |= 0x8;  // Manual drift / hop
++        } else {
++            state.buttonActions |= 0x4;  // In Auto drift, B uses item
++        }
++    }
++    if (buttons & WPAD::WPAD_BUTTON_A) {
++        state.buttonActions |= 0x20; // Rear view
++    }
++    if (slot.eventFlags & EVENT_FLAG_TRICK) {
++        state.motionControlFlick = 1; // Trick / Wheelie (shake)
++        state.motionControlFlickUnmirrored = 1;
++    }
++
++    // UI Menu inputs (UIState)
++    uiState.rawButtons = buttons;
++    uiState.quantisedStickX = quantX;
++    uiState.stickX = state.stick.x;
++
++    if (buttons & (WPAD::WPAD_BUTTON_2 | WPAD::WPAD_BUTTON_A)) {
++        uiState.buttonActions |= 0x1;  // Confirm (2 or A)
++    }
++    if (buttons & (WPAD::WPAD_BUTTON_1 | WPAD::WPAD_BUTTON_B)) {
++        uiState.buttonActions |= 0x2;  // Back (1 or B)
++    }
++    if (buttons & WPAD::WPAD_BUTTON_PLUS) {
++        uiState.buttonActions |= 0x4;  // Start (+)
++    }
++    if (buttons & WPAD::WPAD_BUTTON_RIGHT) {
++        uiState.buttonActions |= 0x8;  // Up
++    }
++    if (buttons & WPAD::WPAD_BUTTON_LEFT) {
++        uiState.buttonActions |= 0x10; // Down
++    }
++    if (buttons & WPAD::WPAD_BUTTON_UP) {
++        uiState.buttonActions |= 0x20; // Left
++    }
++    if (buttons & WPAD::WPAD_BUTTON_DOWN) {
++        uiState.buttonActions |= 0x40; // Right
++    }
++    if (buttons & WPAD::WPAD_BUTTON_MINUS) {
++        uiState.buttonActions |= 0x100; // Minus
++    }
++    if (quantX < 4) {
++        uiState.buttonActions |= 0x20; // Left stick in UI
++    } else if (quantX > 10) {
++        uiState.buttonActions |= 0x40; // Right stick in UI
++    }
++}
++
++BridgeWheelController &GetBridgeController(u32 slot) {
++    if (!initialized) Initialize(OS::TicksToMilliseconds(OS::GetTime()));
++    return sBridgeControllers[slot < 4 ? slot : 0];
++}
++
++void UpdateWheelBridge() {
++    const u32 nowMs = OS::TicksToMilliseconds(OS::GetTime());
++    if (!initialized) Initialize(nowMs);
++    const volatile u8* source = reinterpret_cast<volatile u8*>(inputStorage);
++    const u32 before = ReadGeneration(source);
++    if (before && !(before & 1) && before != lastGeneration) {
++        u8 copy[INPUT_SIZE];
++        for (u32 i = 0; i < INPUT_SIZE; ++i) copy[i] = source[i];
++        MemoryBarrier();
++        const u32 after = ReadGeneration(source);
++        if (before == after && Read32(copy) == before) {
++            receiver.Accept(copy, nowMs);
++            lastGeneration = before;
++        }
++    }
++    receiver.Tick(nowMs);
++    for (u32 i = 0; i < 4; ++i) {
++        sBridgeControllers[i].UpdateImpl(sBridgeControllers[i].inputState, sBridgeControllers[i].uiinputState);
++    }
++    PublishStatus();
++}
++}
++#endif
++
+diff --git "a/PulsarEngine/SplitScreen8/WheelBridge.hpp" "b/PulsarEngine/SplitScreen8/WheelBridge.hpp"
+new file mode 100644
+--- /dev/null
++++ "b/PulsarEngine/SplitScreen8/WheelBridge.hpp"
+@@ -0,0 +1,44 @@
++#ifndef SS8_WHEEL_BRIDGE_HPP
++#define SS8_WHEEL_BRIDGE_HPP
++
++#include <kamek.hpp>
++#include <MarioKartWii/System/Identifiers.hpp>
++#include <MarioKartWii/Input/Controller.hpp>
++
++namespace SplitScreen8 {
++
++class BridgeWheelController : public Input::Controller {
++public:
++    BridgeWheelController();
++    ~BridgeWheelController() override;
++
++    void SetSlot(u32 slotId);
++
++    void UpdateImpl(Input::State &state, Input::UIState &uiState) override;
++    ControllerType GetType() const override { return WHEEL; }
++    bool HasRumble() const override { return false; }
++    void ActivateRumble() override {}
++    void StopRumble() override {}
++    void ResetSelf() override {}
++    double func_0x24() override { return 0.0; }
++    void TogglePointer(bool enablePointer) override {}
++    bool isPointerEnabled() const override { return false; }
++    void UpdateBatteryField() override {}
++    int GetChannel() const override { return slotId; }
++    void SetDriftType(bool isDriftAuto) override { this->isDriftAuto = isDriftAuto; }
++    const nw4r::ut::detail::RuntimeTypeInfo *GetRuntimeTypeInfo() const override { return nullptr; }
++    u8 GetRemainingBattery() const override { return 4; }
++    void Init(bool isDriftAuto) override { this->isDriftAuto = isDriftAuto; }
++
++    bool IsFresh() const;
++    bool HasConfirm() const;
++
++    u32 slotId;
++};
++
++// Called per frame from UpdateExtHolders.
++void UpdateWheelBridge();
++BridgeWheelController &GetBridgeController(u32 slot);
++
++}  // namespace SplitScreen8
++#endif

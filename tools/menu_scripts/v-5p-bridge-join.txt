@@ -1,0 +1,32 @@
+# Mario Kart Wii (vanilla-menu): 5 Players from the main menu, P2-4 join on GC ports 2-4.
+# P5 joins via the ESP32 Wheel Bridge (W3 protocol / BridgeWheelController).
+# Once P5 joins, P1 confirms OK and enters VS solo race to character selection.
+wait 900
+press 1 a        # title: Press A
+wait 400
+press 1 a        # license selection
+wait 200
+press 1 a        # license confirm
+wait 600         # main menu opens
+press 1 right    # Multiplayer: 2 Players
+wait 60
+press 1 right    # 3 Players
+wait 60
+press 1 right    # 4 Players
+wait 60
+press 1 right    # 5 Players
+wait 180
+press 1 a        # select 5 Players
+wait 600         # join page opens
+press 2 a        # join page: P2 joins on GC port 2
+wait 120
+press 3 a        # P3 joins on GC port 3
+wait 120
+press 4 a        # P4 joins on GC port 4
+wait 900         # wait at join page: P5 joins via ESP32 Wheel Bridge
+press 1 a        # ConfirmPads opens (OK selected), P1 presses A
+wait 300
+press 1 a        # Multiplayer menu: VS
+wait 360
+press 1 a        # VS Solo Race -> 8-player character page
+wait 600
