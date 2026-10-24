@@ -28,9 +28,9 @@ missing or another version; Wheel Wizard is optional. The setup
 makes everything else from your files. The rest of this page is
 for building from source.
 
-> **PAL only.** MKWii 8P Splitscreen needs the PAL (European) Mario Kart Wii, game ID **RMCP01**. The USA (RMCE01), Japanese
-> (RMCJ01) and Korean (RMCK01) versions do not work, even though Retro Rewind runs on them: the code is built for the
-> PAL game only. The setup checks the ID first and stops without changing anything if it is not RMCP01.
+> **Which disc.** MKWii 8P Splitscreen runs on the PAL (**RMCP01**), USA (**RMCE01**) and Japanese (**RMCJ01**) Mario Kart
+> Wii. The Korean version (RMCK01) does not work: neither Retro Rewind nor WiiCompiled has a Korean build. The setup
+> checks the ID first and stops without changing anything if it is not one of the three.
 
 | Players | Screen |
 |---|---|
@@ -57,13 +57,13 @@ for building from source.
 ## How it fits together
 
 - The game code is a module in a fork of Retro Rewind's engine, `external/rr-pulsar/PulsarEngine/SplitScreen8/`,
-  built with Kamek into a `Code.pul` (PAL addresses). WiiCompiled takes code only as a `Code.pul`, which it translates
-  at setup.
+  built with Kamek into a `Code.pul`: written with PAL addresses, linked once per region through
+  `GameSource/versions.txt`. WiiCompiled takes code only as a `Code.pul`, which it translates at setup.
 - The Mario Kart Wii build is the same tree built with `--vanilla` (`SS8_VANILLA`): SplitScreen8 without Retro Rewind,
   loaded by Pulsar's own `Loader.pul`.
 - Files derived from the game (the character pages' per-player OK-marker controls) are generated at install time from
   the player's own files (`tools/assets/`). **No Nintendo or Retro Rewind data is in this repository**, nor anything
-  derived from it, apart from the Wii Wheel icon (`tools/release_docs/wii-wheel.ico` and `.rgba`).
+  derived from it, apart from the setup's Wii Wheel icon (`tools/release_docs/wii-wheel.ico`).
 - Each build installs as its own local copy. A player's own Retro Rewind, its saves and online play are only read.
 
 ## Adopting SplitScreen8 in another pack
@@ -107,7 +107,10 @@ ships the generator, not the file.
 - Players 5 to 8 live in side tables sized by `kMaxLocal`, never at indices 4 to 7 of the game's 4-wide arrays, which
   would overwrite the next field. The pack's own per-player statics widen in place to `kMaxLocal`.
 - Search `PulsarEngine` for an address before hooking it: two hooks on one site both apply, and the later one wins.
-- PAL addresses only, from `GameSource/symbols.txt`, and only Kamek command forms Pulsar already uses (this module
+- PAL addresses only, and every one through `GameSource/symbols.txt` or a Kamek hook, never as a number in the code:
+  Kamek ports those to the USA and Japanese builds, and nothing else. `tools/region_check.py` checks a build's three
+  binaries against the discs (its `--derive` gives a `versions.txt` line for an address the map lacks). Only Kamek
+  command forms Pulsar already uses (this module
   uses `kmCall`, `kmBranch`, `kmPatchExitPoint` and `kmWrite32`): WiiCompiled translates `Code.pul` at setup and fails
   there on a form it does not know.
 
@@ -156,8 +159,8 @@ The Retro Rewind build's title shows its commit, `<rr-pulsar commit>-ss8`.
 ### A development copy
 
 `tools/install_8p.py` makes a separate copy to play and test in, under `Documents/Modding/` by default
-(`--root` moves it). It needs Wheel Wizard with Retro Rewind 6.13.4 (the fork's base) and a PAL
-disc image, and Dolphin for `dolphin`. It only reads those.
+(`--root` moves it). It needs Wheel Wizard with Retro Rewind 6.13.4 (the fork's base) and a PAL, USA or
+Japanese disc image (Wheel Wizard's, or `--disc`), and Dolphin for `dolphin`. It only reads those.
 
 ```
 tools/.venv/Scripts/python.exe tools/install_8p.py isolation snapshot   # first: records your own files, to verify later
@@ -194,7 +197,7 @@ Pull requests are welcome and encouraged. Every one is reviewed before it is mer
 
 Report a bug or suggest a feature with the [issue forms](../../issues/new/choose). Changes to the game code go to [therenow9/rr-pulsar](https://github.com/therenow9/rr-pulsar)'s `splitscreen8`
 branch, and this repository records its commit. Keep 1 to 4 players behaving as Retro Rewind does (the few differences above are deliberate), use PAL
-addresses from `GameSource/symbols.txt`, and never commit game files or anything derived from them.
+addresses through `GameSource/symbols.txt` (`tools/region_check.py` should report nothing new), and never commit game files or anything derived from them.
 
 ## Credit
 

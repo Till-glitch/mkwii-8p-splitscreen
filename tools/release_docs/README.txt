@@ -16,29 +16,31 @@ The Mario Kart Wii build plays as the original game, offline, with everything
 unlocked, and with two players allowed to pick the same character.
 
 
-PAL ONLY
---------
+WHICH DISC
+----------
 
-SplitScreen8 works only with the PAL (European) Mario Kart Wii, game ID RMCP01.
+SplitScreen8 works with three versions of Mario Kart Wii:
 
-The USA (RMCE01), Japanese (RMCJ01) and Korean (RMCK01) versions do not work,
-even though Retro Rewind itself runs on them. SplitScreen8's code is built for the
-PAL game only.
+  PAL (Europe, Australia)   game ID RMCP01
+  USA                       game ID RMCE01
+  Japan                     game ID RMCJ01
+
+The Korean version (RMCK01) does not work: neither Retro Rewind nor WiiCompiled
+has a Korean build.
 
 To see your disc image's game ID, look at the ID column in Dolphin's game list, or
 right-click the game and open Properties, then Info.
 
-The setup checks the ID before it does anything else. If it is not RMCP01, the
-setup stops and says so, and nothing is installed or changed.
+The setup checks the ID before it does anything else. If it is not one of the
+three, the setup stops and says so, and nothing is installed or changed.
 
 
 WHAT YOU NEED
 -------------
 
 - Windows.
-- Your own Mario Kart Wii disc image: the PAL (European) version, game ID RMCP01
-  (see PAL ONLY above). No game files come in this zip; the setup makes everything
-  from yours.
+- Your own Mario Kart Wii disc image: PAL, USA or Japan (see WHICH DISC above).
+  No game files come in this zip; the setup makes everything from yours.
 - For the Retro Rewind build: Retro Rewind 6.13.4, its RetroRewind6 folder with the
   riivolution folder beside it, as Wheel Wizard or Retro Rewind's own download
   puts them. If you have none, or yours is another version (6.13.5, say), leave
@@ -92,14 +94,21 @@ Open a build's folder and run:
 
 From the main menu, pick Multiplayer, then 2 to 8 Players.
 
+Above 60 fps in WiiCompiled: press F10, and under Graphics set "Race frame
+interpolation" to 120 or 180 FPS and tick VSync. The game still runs at 60; the
+extra frames make races smoother. Use a monitor at least as fast as the setting
+(WiiCompiled follows the refresh rate of the monitor its window is on), and with
+8 players in the Retro Rewind build, use 120 or Off: 180 is uneven there.
+
 
 CONTROLLERS IN WIICOMPILED
 --------------------------
 
-Press F10 to open the controller settings, and assign each controller once with
-"Assign connected controller" to one of the eight slots, "GC 1" to "GC 4" and
-"Wii 1" to "Wii 4". Any kind of controller works in any slot, and once they are
-all assigned, the order they are in does not matter.
+Press F10 to open the controller settings, and assign each controller once to one
+of the eight rows, "Player 1" to "Player 4" and "Wii 1" to "Wii 4", by picking it
+from the row's list. Any kind of controller works in any row, and once they are
+all assigned, the order they are in does not matter. A real Wii Remote can play
+on a Wii row too (F10, Use Wii Remotes).
 
 A pad on a Wii slot plays as a Classic Controller, with buttons by position. On a
 GameCube controller, that makes X the A button.

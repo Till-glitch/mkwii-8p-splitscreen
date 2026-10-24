@@ -223,7 +223,7 @@ def install(args: argparse.Namespace) -> int:
         fetch = needs_rr()  # an earlier run may have downloaded it
 
     # Everything is checked before anything is written.
-    print(f"disc: {i8.pal_disc()}")
+    print(f"disc: {i8.game_disc()}")
     if "dolphin" in targets and (problem := dolphin_problem(dolphin)):
         sys.exit(problem)
     if "rr" in builds and mine.parent != fetched and (root.is_relative_to(mine) or mine.is_relative_to(root)):
@@ -240,10 +240,10 @@ def install(args: argparse.Namespace) -> int:
     if "wii" in targets:
         if "wit/wit.exe" not in release["files"]:
             sys.exit("this release has no wit, which makes the Wii images: download a release that has it")
-        with i8.pal_disc().open("rb") as f:
+        with i8.game_disc().open("rb") as f:
             rvz = f.read(4) == i8.RVZ_MAGIC
         if rvz and not has_dolphin_tool:
-            sys.exit(f"{i8.pal_disc()} is RVZ, which only DolphinTool reads: pick your Dolphin.exe, or an ISO or WBFS disc image")
+            sys.exit(f"{i8.game_disc()} is RVZ, which only DolphinTool reads: pick your Dolphin.exe, or an ISO or WBFS disc image")
     for name, digest in release["files"].items():
         if i8.sha256(payload / name) != digest:
             sys.exit(f"{payload / name} is not the file this release shipped: download the release again")
@@ -294,7 +294,7 @@ def install(args: argparse.Namespace) -> int:
                 sys.exit(f"WiiCompiled's setup failed for {folder}; its log is %TEMP%\\WiiCompiled-{log}.log")
             i8.guard(layout, layout.wc_install / WC_MARK).write_text(release["files"][installer.name], encoding="utf-8")
             drop_old_installs(i8, layout)
-            i8.copy_file(layout, i8.ROOT / "tools" / "release_docs" / "wii-wheel.rgba", layout.wc_userdata / "window-icon.rgba")
+            i8.guard(layout, layout.wc_userdata / "window-icon.rgba").unlink(missing_ok=True)  # an earlier release's window icon
             i8.guard(layout, layout.wc_userdata / "window-title.txt").write_text(f"{folder} - 8 Player Splitscreen", encoding="utf-8")
             plays["Play (WiiCompiled).cmd"] = f'"{layout.wc_install / "WiiCompiled-Setup.exe"}" --launch-retro'
         print(f"[step] {folder}, menus and code")
@@ -364,8 +364,8 @@ def window(args: argparse.Namespace) -> int:
     discs = [("Wii disc images", "*.iso *.wbfs *.rvz *.wia *.ciso *.gcz"), ("All files", "*.*")]
     # key: the label, what it is for, its value now, how a value is used, its check, how to pick one
     fields = {
-        "disc": ("Mario Kart Wii disc image (PAL)", "Needed for every build.", i8.DISC or i8.ww_config().get("GameLocation"),
-                 lambda p: setattr(i8, "DISC", p), lambda: i8.pal_disc() and None,
+        "disc": ("Mario Kart Wii disc image (PAL, USA or Japan)", "Needed for every build.", i8.DISC or i8.ww_config().get("GameLocation"),
+                 lambda p: setattr(i8, "DISC", p), lambda: i8.game_disc() and None,
                  lambda: filedialog.askopenfilename(parent=win, filetypes=discs)),
         "rr": (f"Retro Rewind {release['rr_version']} folder", "Only for the Retro Rewind build: its RetroRewind6 folder.",
                i8.RR_SRC if (i8.RR_SRC / "version.txt").exists() else None, lambda p: use_rr(i8, p),
@@ -591,7 +591,7 @@ if __name__ == "__main__":
     ap.add_argument("--rr", type=Path, help="your RetroRewind6 folder, in place of Wheel Wizard's")
     ap.add_argument("--fetch-rr", action="store_true",
                     help="when that Retro Rewind is missing or another version, download the right one into --root")
-    ap.add_argument("--disc", type=Path, help="your Mario Kart Wii (PAL) disc image, in place of Wheel Wizard's")
+    ap.add_argument("--disc", type=Path, help="your Mario Kart Wii disc image (PAL, USA or Japan), in place of Wheel Wizard's")
     ap.add_argument("--dolphin", type=Path, help="your Dolphin.exe, in place of Wheel Wizard's")
     ap.add_argument("--payload", type=Path, help="the release's payload/ (default: the one beside this setup)")
     ap.add_argument("--yes", action="store_true", help="install in the console with the defaults for what is not given")
