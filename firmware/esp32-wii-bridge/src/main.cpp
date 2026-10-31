@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <esp_system.h>
 #include "wii_input_model.h"
+#include "wii_slot_reservations.h"
 extern "C" {
 #include <uni_hid_device.h>
 #include <parser/uni_hid_parser_wii.h>
@@ -46,9 +47,11 @@ static uint32_t bootSession;
 static uint32_t transportSequence = 0;
 
 static bool NonzeroAddress(const uint8_t* address) {
-    uint8_t combined = 0;
-    for (size_t i = 0; i < 6; ++i) combined |= address[i];
-    return combined != 0;
+    return ValidReservationAddress(address);
+}
+
+static bool StoreReservations(const unsigned char* data, unsigned int size) {
+    return preferencesReady && preferences.putBytes("slots", data, size) == size;
 }
 
 static void RestoreReservations() {
@@ -125,22 +128,17 @@ static void OnConnected(ControllerPtr controller) {
     const ControllerProperties properties = controller->getProperties();
     const uint8_t* address = properties.btaddr;
     if (!NonzeroAddress(address)) { controller->disconnect(); return; }
-    int slot = -1;
-    for (size_t i = 0; i < kSlots; ++i)
-        if (reserved[i] && !memcmp(slotAddresses[i], address, 6)) { slot = i; break; }
-    if (slot < 0 && pairing) {
-        for (size_t i = 0; i < kSlots; ++i) if (!reserved[i]) { slot = i; break; }
-        if (slot >= 0) {
-            memcpy(slotAddresses[slot], address, 6);
-            if (!preferencesReady || preferences.putBytes("slots", slotAddresses, sizeof(slotAddresses)) != sizeof(slotAddresses)) {
-                memset(slotAddresses[slot], 0, 6);
-                controller->disconnect();
-                return;
-            }
-            reserved[slot] = true;
-        }
-    }
+    bool active[kSlots];
+    for (size_t i = 0; i < kSlots; ++i) active[i] = controllers[i] != nullptr;
+    const int slot = SelectReservationSlot(slotAddresses, active, address, pairing);
     if (slot < 0 || controllers[slot]) { controller->disconnect(); return; }
+    const bool changed = !SameReservationAddress(slotAddresses[slot], address);
+    if (!CommitReservation(slotAddresses, slot, address, StoreReservations)) {
+        controller->disconnect();
+        return;
+    }
+    reserved[slot] = true;
+    if (changed) ApplyAllowlist();
     portENTER_CRITICAL(&sampleLock);
     samples[slot].ResetInput();
     calibrationAttempts[slot] = 1;

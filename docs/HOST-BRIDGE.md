@@ -1,6 +1,8 @@
 # Windows-Host-Bridge: aktueller Implementierungsstand
 
-Stand: 24.10.2026. Der Host transportiert validierte W3-Eingaben und unterstützt die neue **diagnostische** Gast-Mailbox. Ein Gast mit ausschließlich Capability `1` bindet noch keine Wheel-Controller an Spieler-Holder. Ein erfolgreiches ACK dieses Gasts bestätigt Diagnosekonsum, keine Spielsteuerung.
+Stand: 24.10.2026. Der Host transportiert validierte W3-Eingaben und unterstützt die versionierte Gast-Mailbox. Ein Gast mit ausschließlich Capability `1` bestätigt nur Diagnosekonsum. Der aktuelle optionale Wheel-Build meldet Capability `3` (`DIAGNOSTIC | WHEEL_INPUT`) und verarbeitet Gameplay-Ereignisse vor ihrer Quittierung. Die praktische Fahrabnahme bleibt davon getrennt.
+
+Der profilgebundene Starter samt geprüfter RAM-Discovery steht in [START-8-WIIMOTES.md](START-8-WIIMOTES.md). Die nachfolgend beschriebene direkte `--attach`-Schnittstelle bleibt für explizite Diagnosezwecke verfügbar.
 
 ## Einstieg
 
@@ -24,7 +26,19 @@ Eine Aufnahme wird exklusiv neu angelegt; vorhandene Dateien werden nicht übers
 
 Alte W2-Aufnahmen lassen sich mit `--allow-w2` diagnostizieren. W2 bekommt eine gesonderte Referenzanzeige und kann nicht an die neue Gast-Mailbox angehängt werden. Das veraltete WM-Format wird nicht als W3- oder Wheel-Nachweis behandelt.
 
-## Geräte explizit für P5–P8 reservieren
+## Automatische Zuordnung zu P5–P8
+
+Der Standardmodus benötigt keine MAC-Konfiguration: Die erste tatsächlich verbundene Wiimote erhält P5, weitere erhalten freie Plätze bis P8. Im gleichen Bericht gleichzeitig neu verbundene Geräte werden nach ESP32-Slotreihenfolge verarbeitet. Gespeicherte Adressen getrennter Geräte blockieren keine Plätze. Eine einzelne Wiimote an ESP32-Slot 3 kann deshalb P5 sein; LEDs sind keine festen Spielernummern.
+
+Während des Hostlaufs bleiben aktive Spieler an ihrem Platz. Nach einem Disconnect bevorzugt ein bekanntes Gerät seinen bisherigen Platz, solange dieser noch frei ist. Ein neues Gerät darf einen getrennten Platz übernehmen; kommt die vorherige Wiimote später zurück, bekommt sie einen anderen freien Platz. Nach einem ESP32-/Hostneustart beginnt die automatische Verbindungsreihenfolge neu. Neue Wiimotes werden weiterhin über das physische BOOT-Kopplungsfenster am ESP32 angemeldet, ohne MAC-Eingaben am Computer.
+
+Zuordnung und Modus erscheinen in den Diagnosezusammenfassungen als `assignments` (ESP32-Quelle → Spieler) und `assignment_mode`. Der Host prüft weiterhin Geräteidentitäten, damit Eingaben und ACKs beim richtigen Gerät landen. Eine doppelte Geräteidentität neutralisiert den mehrdeutigen Zustand.
+
+Bei einer geänderten Bindung beginnt die Mailbox eine neue Hostsession: Vorherige Aktionen werden kontrolliert verworfen und gegenüber dem ESP32 quittiert. Der Gast setzt die Filter-/ACK-Basis neutral zurück, bevor er die möglicherweise neu gestarteten Sensor-/Ereigniszähler annimmt. Die übrigen Spieler behalten ihre Platznummern; ihre Eingaben durchlaufen bei dieser Änderung ebenfalls die kurze neutrale Sitzungsgrenze. Ein ACK der vorherigen Gast-Hostsession kann kein neues Gerät quittieren. UART-Bootsession und Firmware-ACK-Zähler werden unverändert verwendet.
+
+### Optional: manuelle Reservierungen
+
+Nur mit `--manual-mapping` verwendet die Bridge eine feste gespeicherte MAC-Zuordnung. Alte Konfigurationen bleiben erhalten, beeinflussen den automatischen Standardbetrieb aber nicht.
 
 ```powershell
 tools/.venv/Scripts/python.exe -m tools.wiimote_bridge --assign 00:11:22:33:44:55=5
@@ -45,9 +59,9 @@ Format:
 }
 ```
 
-Die Reservierung wird atomar gespeichert. Ein Gerät oder Spieler kann nicht stillschweigend einer anderen Reservierung zugewiesen werden. Eine alte Zuordnung muss ausdrücklich entfernt werden. Unbekannte Geräte erscheinen in der Diagnose, liefern aber keine aktiven Gast-Slots. Eine doppelte Geräteidentität in einer Metadatentabelle neutralisiert den mehrdeutigen Zustand.
+Die manuelle Reservierung wird atomar gespeichert. Im manuellen Modus muss eine alte feste Zuordnung ausdrücklich entfernt werden; unbekannte Geräte liefern dort keine aktiven Gast-Slots. Den Modus beim CLI bzw. Live-Starter mit `--manual-mapping` aktivieren.
 
-Der Host übersetzt Firmware-Slots anhand der MAC-Reservierung in logische Slots `0..3`, entsprechend P5–P8. Gast-ACKs werden entsprechend zurück auf den Firmware-Slot übersetzt. Die native Vierergruppe P1–P4 auf dem Laptop verwendet diesen ESP32-Transport nicht.
+Der Host übersetzt Firmware-Slots anhand der aktuellen automatischen oder ausdrücklich manuellen Zuordnung in logische Slots `0..3`, entsprechend P5–P8. Gast-ACKs werden entsprechend zurück auf den Firmware-Slot übersetzt. Die native Vierergruppe P1–P4 auf dem Laptop verwendet diesen ESP32-Transport nicht.
 
 ## Frische, Ereignisse und Wiederherstellung
 
@@ -108,4 +122,4 @@ tools/.venv/Scripts/python.exe -m unittest discover -s tools/wiimote_tests -p 't
 
 Aktuell geprüft: Mapping/Persistenz, eindeutige Portwahl, Quellenzuordnung, Sensorfrische trotz Transportfortschritt, Ereignisduplikate/-lücken, ACK-Grenzen, Disconnect-/Boot-/Überlaufverhalten, gealterte Ereignisse, JSONL-Roundtrip, CLI-Hilfe und Replay ohne optionale Pakete, Mailboxlayout/CRC/Commit sowie abgewiesene Schreibversuche bei falschem Spiel, Build, Prozess oder überlappenden Speichern.
 
-Nicht als geprüft ausgegeben werden echter COM-Betrieb, tatsächliche Windows-ReadProcessMemory-Anbindung an Dolphin, Hardwarelatenz oder Fahrverhalten. Die erste Version benötigt noch automatische, belegte RAM-Discovery und automatischen kontrollierten Port-Reconnect. Der nächste funktionale Schritt bleibt die tatsächliche Gast-Wheel-/Holder-Anbindung.
+Inzwischen zusätzlich geprüft: echter W3-Serienempfang, geprüfte Windows-RAM-Anbindung über drei passende Aliases derselben Dolphin-Sitzung sowie synthetische Eingaben durch die Gast-Wheel-/Holder-Anbindung bis in eine Achtspieler-VS-Rennszene. Die Starter sperren ihr Profil, verlangen ein passendes installiertes Buildmanifest und beenden nur den eigenen Prozess. Diese Nachweise bestätigen noch keine gesamte Funkstrecke mit vier echten Wheels, Hardwarelatenz oder Fahrgefühl. Automatischer kontrollierter Port-Reconnect sowie die praktische native/Bridge-Gesamtabnahme bleiben offen. Einzelheiten und aktuelle Zahlen stehen im zentralen Implementierungsprotokoll.

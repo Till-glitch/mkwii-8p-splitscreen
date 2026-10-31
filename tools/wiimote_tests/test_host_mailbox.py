@@ -4,6 +4,7 @@ from __future__ import annotations
 import struct
 import unittest
 import zlib
+from unittest.mock import patch
 
 from tools.wiimote_bridge.mailbox import (BuildManifest, Descriptor, GuestMailbox, GuestStatus,
                                          MailboxBusyError, MailboxError, encode_input)
@@ -70,6 +71,28 @@ class MailboxTests(unittest.TestCase):
     def test_validated_descriptor_authorizes_only_input_range(self) -> None:
         GuestMailbox(self.memory, DESCRIPTOR, self.manifest, host_session=33)
         self.assertEqual(self.memory.authorized, (INPUT, 640))
+
+    def test_binding_change_renews_session_without_reusing_commit_generation(self) -> None:
+        mailbox = GuestMailbox(self.memory, DESCRIPTOR, self.manifest, host_session=33)
+        mailbox.publish(self.view, host_elapsed_ms=1)
+        with patch("tools.wiimote_bridge.mailbox.secrets.randbits", return_value=33):
+            mailbox.renew_host_session()
+        self.assertNotEqual(mailbox.host_session, 33)
+        self.assertEqual(mailbox.generation, 2)
+        self.assertEqual(mailbox.publish_sequence, 0)
+        mailbox.publish(self.view, host_elapsed_ms=2)
+        self.assertEqual(mailbox.generation, 4)
+        self.assertEqual(mailbox.publish_sequence, 1)
+        body = self.memory.writes[-2][1]
+        self.assertEqual(struct.unpack_from(">I", body, 4)[0], mailbox.host_session)
+
+    def test_session_renewal_refuses_a_changed_guest_before_mutating_host(self) -> None:
+        mailbox = GuestMailbox(self.memory, DESCRIPTOR, self.manifest, host_session=33)
+        self.memory.regions[DESCRIPTOR] = descriptor(guest_session=23)
+        with self.assertRaises(MailboxError):
+            mailbox.renew_host_session()
+        self.assertEqual(mailbox.host_session, 33)
+        self.assertEqual(self.memory.writes, [])
 
     def test_wrong_game_or_build_or_process_means_no_writes(self) -> None:
         for fault in ("game", "build", "process"):

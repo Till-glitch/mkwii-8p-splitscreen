@@ -2,6 +2,8 @@
 
 Dieses Dokument richtet sich an tiefer denkende Folge-Agents und Systemarchitekten. Es fasst die getroffenen Low-Level- und Architektur-Entscheidungen der ESP32-Wii-Bridge für den 8-Spieler-Splitscreen in Mario Kart Wii zusammen und definiert eine priorisierte Liste von Aspekten, die vor dem finalen Produktiveinsatz (insbesondere auf dem Ziel-Laptop mit 8 echten Wiimotes) einer tieferen Prüfung unterzogen werden sollten.
 
+**Einordnung nach Quellenabgleich:** Die automatisierten Beitritts-/Rennaufbautests speisen synthetische Snapshots direkt in die Gast-Mailbox ein. Sie bestätigen noch keine acht echten Wiimotes, originales Wheel-Fahrgefühl, korrekte Item-/Stuntverarbeitung oder 60 FPS im Rennen. Maßgeblich sind die korrigierten Nachweisgrenzen und nächsten Schritte in `IMPLEMENTIERUNGSSTAND.md`. Die nachfolgenden Adressen sind Beispiele aus einzelnen Läufen und keine wiederverwendbaren festen Mailboxadressen.
+
 ---
 
 ## 1. Aktueller Systemzustand & Verifizierter Status
@@ -51,12 +53,12 @@ Der vollständige Pfad von der Eingabe-Emulation über die W3-Protokollframes, d
 
 - **Berechnung der Datenrate bei 4 aktiven Wiimotes:**
   - Protokoll: W3 Frame ([`wii_bridge_protocol.h`](file:///c:/Users/Till/Documents/mkwii-8p-splitscreen-esp32-support/shared/wii_bridge_protocol.h)).
-  - Snapshot pro Slot: 16 Bytes. 4 Slots = 64 Bytes Payload + 16 Bytes Frame-Header/CRC = ~80 Bytes pro W3-Frame.
-  - Bei 60 Hz Update-Rate: $80 \times 60 = 4.800\text{ Bytes/s}$.
-  - Serial-Overhead (8N1): 1 Startbit, 8 Datenbits, 1 Stopbit = 10 Bits pro Byte $\rightarrow 48.000\text{ Baud}$.
-  - Bei 115.200 Baud liegt die nominale Auslastung bei ca. **42%**.
+   - Snapshot pro Slot: **24 Bytes**. 4 Slots = 96 Bytes Payload + 18 Bytes Header + 2 Bytes CRC = **116 Bytes pro W3-Frame**.
+   - Bei 60 Hz Update-Rate: $116 \times 60 = 6.960\text{ Bytes/s}$.
+   - Serial-Overhead (8N1): 10 Bits pro Byte $\rightarrow 69.600\text{ Bit/s}$.
+   - Bei 115.200 Baud liegt die rechnerische Auslastung allein für Snapshots bei ungefähr **60,4%**; Übertragungszeit je Snapshot ungefähr **10,1 ms**. Das sind Rechenwerte, keine End-to-End-Latenzmessung.
 - **Spitzenlast durch Ereignisse (Shake / Gesten):**
-  - Schüttel-Ereignisse (Stunts/Wheelies) erzeugen zusätzliche `EVENT`-Records (8 Bytes pro Event).
+  - Schüttel-Ereignisse (Stunts/Wheelies) erzeugen zusätzliche `EVENT`-Records (**16 Bytes pro Event**), zuzüglich Rahmen- und gegebenenfalls Wiederholungsaufwand.
   - *Prüffrage:* Bei gleichzeitigem Schütteln von 4 Spielern kann die Datenrate kurzzeitig ansteigen.
   - *Empfehlung für den Agenten:* Prüfen, ob eine Erhöhung der UART-Baudrate auf **230.400** oder **460.800 Baud** auf dem ESP32 ([`firmware/esp32-wii-bridge/platformio.ini`](file:///c:/Users/Till/Documents/mkwii-8p-splitscreen-esp32-support/firmware/esp32-wii-bridge/platformio.ini)) und im Host-Service ([`tools/wiimote_bridge/service.py`](file:///c:/Users/Till/Documents/mkwii-8p-splitscreen-esp32-support/tools/wiimote_bridge/service.py)) zusätzliche Latenzreserven schafft, ohne die Signalintegrität des USB-Serial-Wandlers (CP2102/CH340) zu beeinträchtigen.
 
@@ -64,7 +66,7 @@ Der vollständige Pfad von der Eingabe-Emulation über die W3-Protokollframes, d
 
 ### Fokus 3: Lenkungsphysik & Wheel-Kalibrierungsmatrix
 
-- **Aktuelle Heuristik in `BridgeWheelController::UpdateImpl`:**
+- **Heuristik des übernommenen Prototyps (inzwischen ersetzt):**
   ```cpp
   float steer = 0.0f;
   const int rawX = slot.accelX; // 128 Einheiten = 1g
@@ -79,9 +81,10 @@ Der vollständige Pfad von der Eingabe-Emulation über die W3-Protokollframes, d
   state.stick.x = float(int(quantX) - 7) / 7.0f;
   ```
 - *Prüffrage für den Agenten:*
-  - Mario Kart Wii verwendet im Originaltreiber (`WiiController::UpdateStatesCore` bei `0x8051fbe0`) eine nichtlineare Kalibrierungsfunktion mit Rollwinkelberechnung $\arctan2(X, Y)$ und Glättung, um Gravitationseinflüsse bei Neigung der Fernbedienung herauszurechnen.
+  - Die akzeptierte Referenz nutzt originale KPAD-/Wheel-Funktionen, private Filterzustände und die native Quantisierung. Die im ursprünglichen Review behauptete konkrete `atan2`-Formel ist damit noch nicht als vollständiger Originalalgorithmus belegt.
   - Die aktuelle Implementierung projiziert rein die Rohachse $X$ mit linearer Skalierung (`/ 100.0f`) auf 15 diskrete Stufen (`0..14`).
-  - *Aufgabe:* Im manuellen Fahrtest das Ansprechverhalten und den Nullpunkt bei waagerechter Haltung bewerten. Falls das Einlenken zu giftig oder zu träge wirkt: Formel auf echten Rollwinkel $\theta = \operatorname{atan2}(a_x, a_y)$ erweitern.
+  - *Aufgabe:* Die akzeptierten originalen Funktionen samt Operationsreihenfolge portieren und gegen unabhängige Referenzen prüfen. Keine weitere frei gewählte Winkel-, Deadzone- oder Rundungsformel als Ersatz einführen. Anschließend das gesamte Fahrgefühl auf echten Geräten vergleichen.
+  - *Aktualisierung:* `WheelNative.hpp/.cpp` ersetzt diese Heuristik inzwischen durch die akzeptierten originalen PAL-Funktionen. Native Codevergleiche und ihre Grenzen sind in `WHEEL-NATIVE-PORT.md` dokumentiert. Die physische Fahrprüfung bleibt erforderlich.
 
 ---
 
@@ -120,7 +123,7 @@ Der vollständige Pfad von der Eingabe-Emulation über die W3-Protokollframes, d
 ### Fokus 6: Portierung auf Retro Rewind (Full Mod mit Custom Tracks)
 
 - Der bisherige Durchstich ist isoliert auf **Vanilla PAL (`RMCP01`)** nachgewiesen (`-DSS8_VANILLA -DSS8_WHEEL_BRIDGE`).
-- Das Endziel des Gesamtsystems ist der Einsatz unter **Retro Rewind 6 (RR6)**:
+- **Retro Rewind ist eine spätere optionale Erweiterung**; der aktuelle Implementierungseinstieg und erste Abnahmen bleiben Vanilla/PAL:
   - *Unterschiede:* RR6 nutzt MEM2 intensiv für Custom Tracks (Szs), Custom Characters und zusätzliche Sounds.
   - `WheelBridge` belegt ca. 1.200 Bytes in MEM1 (BSS).
   - *Prüfaufgabe:* Bei Übergang auf das volle RR6-Profil (`build_code.py --wheel-bridge` ohne `--vanilla`) prüfen, ob die Linker-Symbole und Speicherheaps mit den erweiterten Pulsar-Heaps harmonieren.
@@ -132,7 +135,8 @@ Der vollständige Pfad von der Eingabe-Emulation über die W3-Protokollframes, d
 - **WPAD Kanal-Grenzen (`WPAD_CHAN_0` .. `WPAD_CHAN_3`):**
   - Im originalen RVL-WPAD-Subsystem der Wii sind nur 4 Kanäle definiert.
   - `BridgeWheelController` implementiert `GetChannel() const override { return slotId; }` mit Werten `0..3`.
-  - Da Spieler 5–8 über Holders `4..7` angebunden sind, fängt Pulsar alle Zugriffe ab, sodass kein unberechtigter Aufruf an `WPADControlSpeaker` oder `WPADProbe` für Kanäle $\ge 4$ im Wii-Systemtreiber erfolgt.
+  - Die erweiterten Holder allein beweisen nicht, dass sämtliche Typ-/Kanalzugriffe korrekt behandelt werden. Neben Kanälen ab 4 ist insbesondere eine Verwechslung der Bridge-IDs mit den gleichzeitig belegten nativen Kanälen 0–3 zu prüfen. Native Metadatenfunktionen und alle relevanten Controller-Aufrufpfade benötigen dafür konkrete Befunde.
+  - *Aktualisierung:* Der Originalcode-Abgleich hat identische native IDs sowie MAC-Abfragen am falschen nativen Kanal bestätigt. Bridge-Metadaten werden deshalb explizit mit logischen Proxy-Adressen gefüllt; Join verwendet private IDs und nur UI-Ausgaben Darstellungs-IDs. Für Bridge-Geräte wird kein nativer Lautsprecher ausgewählt. Der kombinierte Laptop-Lauf bleibt ein eigener Nachweis.
   - *Zu prüfen:* Ruft das Spiel bei Items oder Hindernissen Force-Feedback / Rumble auf? Die Rückkopplung ist aktuell als Dummy implementiert; zukünftige Erweiterungen können Rumble über die Mailbox-Statusbytes zurück an den ESP32 melden.
 
 ---

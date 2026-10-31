@@ -1,6 +1,6 @@
 # ESP32-Wiimote-Bridge für zusätzliche Spieler 5–8
 
-Status: erste W3-Firmware implementiert und lokal kompiliert. Es wurde kein Gerät geflasht und noch kein Funk-/Hardwaretest durchgeführt.
+Status: W3-Firmware auf dem vorhandenen ESP32 in Betrieb; zwei echte Wiimotes wurden im manuellen Dolphin-Test verwendet. Die Erweiterung zur automatischen Ersatzvergabe vom 25.10.2026 ist gebaut, softwaregeprüft und nach vollständiger 4-MB-Sicherung auf dem vorhandenen ESP32 installiert. Der Austausch anderer Geräte bleibt praktisch zu prüfen. Den konkreten Upload- und Hardwareprüfstand führt [IMPLEMENTIERUNGSSTAND.md](../docs/IMPLEMENTIERUNGSSTAND.md).
 
 Der Entwicklungsrechner benötigt kein eigenes Bluetooth-Modul. Ein **originaler ESP32 mit Bluetooth Classic** empfängt vier Wii Remotes und sendet ihre Daten per USB/UART an den Host. ESP32-S3/C3 sind für diesen Wiimote-Pfad kein Ersatz. Die vier direkt mit Dolphin verbundenen Wiimotes kommen später auf dem Ziel-Laptop hinzu.
 
@@ -36,15 +36,16 @@ Die Buildprodukte liegen unter `.pio/build/esp32dev/` und bleiben außerhalb von
 3. Den aktuellen funktionierenden Firmwarestand und die verwendete Quelle dokumentieren.
 4. Erst nach dieser Prüfung einen Upload auf genau dieses Gerät ausführen.
 
-Der hier durchgeführte Implementierungsschritt hat keinen Upload gestartet.
+Ein erfolgreicher Build führt keinen Upload aus. Hardware, ausgewählten Port und Sicherung vor einem Upload prüfen.
 
-## Kopplung und feste Plätze
+## Kopplung und automatische Plätze
 
-- ESP32-Slot 0–3 entspricht standardmäßig P5–P8 im Spiel.
+- ESP32-Slot 0–3 und die LEDs kennzeichnen Funkplätze. Der Host ordnet tatsächlich verbundene Geräte automatisch P5–P8 zu; die LED-Nummer legt keinen Spieler fest.
 - Ein kurzer Druck auf die BOOT-Taste (`GPIO0`), nach dem Booten wieder losgelassen, öffnet bzw. beendet ein Kopplungsfenster von 60 Sekunden.
 - In diesem Fenster nur die für den ESP32 vorgesehenen Wiimotes anmelden. Die Laptop-Gruppe bleibt getrennt.
 - Die erste Anmeldung reserviert einen noch unbenutzten Platz anhand der Bluetooth-Adresse und speichert die vier Reservierungen in der eigenen NVS-Preferences-Namespace `ss8-wheels`.
-- Ein bekanntes Gerät erhält nach dem Wiederverbinden denselben Platz. Ein neues Gerät kann keinen reservierten freien Platz stillschweigend übernehmen.
+- Ein bekanntes Gerät erhält nach dem Wiederverbinden denselben ESP32-Platz, sofern dieser frei ist. Für ein neues Gerät wird im Kopplungsfenster zuerst ein noch nie reservierter Platz gewählt; sind alle reserviert, wird automatisch die erste getrennte Reservierung ersetzt. Verbundene Controller werden nie verdrängt.
+- Die gesamte neue Adresstabelle wird vor der Live-Übernahme als ein NVS-Wert gespeichert. Schlägt das fehl, bleiben bisherige Zuordnung und Erlaubnisliste erhalten. Bei erfolgreichem Austausch wird die alte Adresse aus der Erlaubnisliste entfernt.
 - Außerhalb des Kopplungsfensters wird die Bluepad-Erlaubnisliste auf die reservierten Geräte eingeschränkt. Unbekannte Geräte werden zusätzlich auf Anwendungsebene abgewiesen.
 - Bei vier verbundenen Geräten endet das Kopplungsfenster automatisch.
 - Ein BOOT-Druck von mindestens vier Sekunden löscht die eigenen Platzreservierungen **nur wenn kein Controller verbunden ist** und startet den ESP32 neu. Die Bluepad-Bondingdaten werden dabei nicht pauschal gelöscht.

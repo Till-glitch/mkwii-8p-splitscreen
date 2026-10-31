@@ -1,15 +1,98 @@
 diff --git a/GameSource/symbols.txt b/GameSource/symbols.txt
-index 4490db48..93a9e702 100644
+index 4490db48..443b61a6 100644
 --- a/GameSource/symbols.txt
 +++ b/GameSource/symbols.txt
-@@ -2861,3 +2861,5 @@ wipeControlDtor = 0x80651c48
+@@ -2861,3 +2861,19 @@ wipeControlDtor = 0x80651c48
  layoutControlDtor = 0x8063d8c0
  wipeAnims = 0x80899f18
  multiPlayerMovies = 0x808addfc
 +__ct__Q25Input10ControllerFv = 0x8051eba8
 +__dt__Q25Input10ControllerFv = 0x8051f1ec
++
++# Private PAL Wheel/KPAD calls; referenced by symbol so Kamek applies versions.txt.
++ss8WheelNativeReset = 0x80746afc
++ss8WheelNativeUpdate = 0x80746c64
++ss8WheelNativeScalarFilter = 0x8019548c
++ss8WheelNativeItemManual = 0x8074612c
++ss8WheelNativeItemAutomatic = 0x807462b8
++ss8WheelNativeSetStickXMirrorCheck = 0x8051e960
++ss8WheelNativeSetMotionControlFlick = 0x8051eb68
++ss8WheelNativeKpadThreshold = 0x8034587c
++ss8WheelNativeKpadGain = 0x80345880
++ss8WheelNativeKpadFlags = 0x80345d14
++ss8WheelNativeUpdateStatesCore = 0x8051fbe0
++ss8WheelNativeMotionInit = 0x807459e4
+diff --git a/PulsarEngine/SplitScreen8/Audio.cpp b/PulsarEngine/SplitScreen8/Audio.cpp
+index 423c906a..7ad6d3c1 100644
+--- a/PulsarEngine/SplitScreen8/Audio.cpp
++++ b/PulsarEngine/SplitScreen8/Audio.cpp
+@@ -10,6 +10,9 @@
+ #include <MarioKartWii/Race/RaceInfo/RaceInfo.hpp>
+ #include <MarioKartWii/UI/Section/SectionPad.hpp>
+ #include <SplitScreen8/SplitScreen8.hpp>
++#ifdef SS8_WHEEL_BRIDGE
++#include <SplitScreen8/WheelBridge.hpp>
++#endif
+ 
+ // A 3D sound reaches at most 4 listeners (Voice::Acquire clamps to 4), so each camera past the 4th folds into the listener of
+ // the screen above it. Hud 4-7's per-hud state lives in side copies; echo, ambience and track triggers stay with P1-4.
+@@ -499,9 +502,23 @@ static u32 NewIDWide(const void *pads, s32 hud) {
+     const u32 count = raceLocalCount > menuLocalCount ? raceLocalCount : menuLocalCount;
+     if (hud >= count || hud >= kMaxLocal)
+         return 0;
+-    return calculateID(&Holder(*Input::Manager::sInstance, hud));
++    const Input::RealControllerHolder* holder = &Holder(*Input::Manager::sInstance, hud);
++#ifdef SS8_WHEEL_BRIDGE
++    return DisplayWheelControllerID(StableWheelControllerID(holder));
++#else
++    return calculateID(holder);
++#endif
+ }
+-kmCall(0x80715460, NewIDWide);
++static u32 SpeakerIDWide(const void* pads, s32 hud) {
++#ifdef SS8_WHEEL_BRIDGE
++    Input::Manager* input = Input::Manager::sInstance;
++    if (input != nullptr && hud >= kGameLocal && hud < kMaxLocal &&
++        IsBridgeController(Holder(*input, hud).curController))
++        return 0; // No native speaker belongs to a bridge controller.
++#endif
++    return NewIDWide(pads, hud);
++}
++kmCall(0x80715460, SpeakerIDWide);
+ // RecognizePadMenu's and RecognizePadLocalRace's BeforeEntranceAnimations+0x38 and BeforeControlUpdate+0x2C ask it for
+ // the reconnect box's slot, P5-8's in a 5-8 player game (Join.cpp).
+ kmCall(0x8061c660, NewIDWide);
+diff --git a/PulsarEngine/SplitScreen8/Culling.cpp b/PulsarEngine/SplitScreen8/Culling.cpp
+index 5e84ed7e..400d4dbb 100644
+--- a/PulsarEngine/SplitScreen8/Culling.cpp
++++ b/PulsarEngine/SplitScreen8/Culling.cpp
+@@ -44,6 +44,24 @@ static Clip &Shadow(Clip &clip) {
+     return *reinterpret_cast<Clip *>(reinterpret_cast<u8 *>(&clip) + kClipShadow);
+ }
+ 
++// ClipInfo's nearest-screen distance feeds DriverController's +0xB4 animation
++// cutoff (0x807CB2D8), including its trick-start callback at 0x807D18EC. The
++// original leaf only reads screens 0-3: a kart on screen 4+ then loses its own
++// stunt animation when far from those four cameras, while physics still tricks.
++// Native fcmpo + ble keeps the previous value on unordered/NaN comparisons.
++static float ClipMinimumDistance(const Clip &clip) {
++    float distance = clip.distance[0];
++    for (u32 s = 1; s < kGameLocal; ++s) {
++        if (distance > clip.distance[s]) distance = clip.distance[s];
++    }
++    for (u32 s = kGameLocal; s < raceScreenCount && s < kMaxLocal; ++s) {
++        const float other = reinterpret_cast<const Clip *>(reinterpret_cast<const u8 *>(&clip) + kClipShadow)->distance[s - kGameLocal];
++        if (distance > other) distance = other;
++    }
++    return distance;
++}
++kmBranch(0x80787d18, ClipMinimumDistance);
++
+ static float Dot(const float *plane, const float *d) {
+     return d[0] * plane[0] + d[1] * plane[1] + d[2] * plane[2];
+ }
 diff --git a/PulsarEngine/SplitScreen8/Input.cpp b/PulsarEngine/SplitScreen8/Input.cpp
-index bdf52435..554ae24e 100644
+index bdf52435..27f56a12 100644
 --- a/PulsarEngine/SplitScreen8/Input.cpp
 +++ b/PulsarEngine/SplitScreen8/Input.cpp
 @@ -2,6 +2,9 @@
@@ -32,8 +115,18 @@ index bdf52435..554ae24e 100644
      const u32 count = raceLocalCount > menuLocalCount ? raceLocalCount : menuLocalCount;
      for (u32 id = kGameLocal; id < count; ++id) Holder(*input, id).Update(input->isPaused);
  }
+@@ -98,6 +104,9 @@ kmCall(0x8052395c, UpdateExtHoldersStub);
+ 
+ // Every scene's Prepare initialises holders 0-3 (loop bound 0x805236DC); the extra holders a race uses too.
+ static void PrepareExtHolders(Input::Manager *input) {
++#ifdef SS8_WHEEL_BRIDGE
++    ResetWheelBridgeScene();
++#endif
+     for (u32 id = kGameLocal; id < RaceHolderCount(); ++id) Holder(*input, id).Init();
+ }
+ 
 diff --git a/PulsarEngine/SplitScreen8/Join.cpp b/PulsarEngine/SplitScreen8/Join.cpp
-index 3dfbe58b..fa06ad17 100644
+index 3dfbe58b..11d1a7ab 100644
 --- a/PulsarEngine/SplitScreen8/Join.cpp
 +++ b/PulsarEngine/SplitScreen8/Join.cpp
 @@ -9,6 +9,9 @@
@@ -46,13 +139,66 @@ index 3dfbe58b..fa06ad17 100644
  
  // In place of RegisteredPads and RegisterPad, whose PadControl[4] and prompts stop at 4: P2-4 join through
  // SectionPad's RequestPad, P5-8 through extPads and TrySetController on holders 4-7.
-@@ -268,11 +271,29 @@ static void TakePad(u32 slot) {
+@@ -48,6 +51,22 @@ const u32 kConfirmFrames = 10;
+ 
+ ExtPad extPads[kMaxLocal - kGameLocal];
+ 
++static u32 RegistrationID(const Input::RealControllerHolder* holder) {
++#ifdef SS8_WHEEL_BRIDGE
++    return StableWheelControllerID(holder);
++#else
++    return calculateID(holder);
++#endif
++}
++
++static u32 PresentationID(u32 id) {
++#ifdef SS8_WHEEL_BRIDGE
++    return DisplayWheelControllerID(id);
++#else
++    return id;
++#endif
++}
++
+ static Input::RealControllerHolder &SlotHolder(u32 slot) {
+     return Holder(*Input::Manager::sInstance, slot);
+ }
+@@ -225,7 +244,7 @@ void JoinPage::OnActivate() {
+         Input::RealControllerHolder &holder = SlotHolder(slot);
+         if (!held) {
+             holder.SetController(controller, nullptr);
+-            if (calculateID(&holder) == pad.id) {
++            if (RegistrationID(&holder) == pad.id) {
+                 BindPad(holder, controller);
+                 continue;
+             }
+@@ -239,7 +258,7 @@ static bool Joined(u32 slot) {
+     if (slot < kGameLocal)
+         return SectionMgr::sInstance->pad.HasAController(slot);
+     const ExtPad &pad = extPads[slot - kGameLocal];
+-    return !pad.waiting && pad.id != 0 && pad.id == calculateID(&SlotHolder(slot));
++    return !pad.waiting && pad.id != 0 && pad.id == RegistrationID(&SlotHolder(slot));
+ }
+ 
+ u32 JoinPage::SlotId(u32 slot) const {
+@@ -247,7 +266,11 @@ u32 JoinPage::SlotId(u32 slot) const {
+         return 0;
+     if (slot < kGameLocal)
+         return SectionMgr::sInstance->pad.GetCurrentID(slot);
++#ifdef SS8_WHEEL_BRIDGE
++    return PresentationID(extPads[slot - kGameLocal].id);
++#else
+     return extPads[slot - kGameLocal].id;
++#endif
+ }
+ 
+ // The slot waits for an A on any controller no holder has; its holder drops to the dummy controller.
+@@ -268,11 +291,29 @@ static void TakePad(u32 slot) {
      if (!pad.waiting)
          return;
      trySetController(Input::Manager::sInstance, slot, 0);
 -    const u32 id = calculateID(&SlotHolder(slot));
 -    if (id == 0)
-+    u32 id = calculateID(&SlotHolder(slot));
++    u32 id = RegistrationID(&SlotHolder(slot));
 +    if (id != 0) {
 +        pad.id = id;
 +        pad.waiting = false;
@@ -67,7 +213,7 @@ index 3dfbe58b..fa06ad17 100644
 +        if (bridge.IsFresh() && bridge.HasConfirm()) {
 +            Input::RealControllerHolder &holder = SlotHolder(slot);
 +            BindPad(holder, &bridge);
-+            id = calculateID(&holder);
++            id = RegistrationID(&holder);
 +            if (id != 0) {
 +                pad.id = id;
 +                pad.waiting = false;
@@ -80,11 +226,30 @@ index 3dfbe58b..fa06ad17 100644
  }
  
  // The slot empties and stops waiting; its holder drops to the dummy controller.
+@@ -471,7 +512,7 @@ kmCall(0x8061c438, FirstDeactivatedPad);
+ // The box's reads of its slot (both OnActivates, AfterControlUpdate+0x4C), and the lamp row's, which lights that slot's
+ // port or channel (SetMessage_case14+0x2C, "{arg border}"); P5-8 have no PadInfo.
+ static u32 BoxCurrentID(const SectionPad *pad, u32 slot) {
+-    return ExtBoxSlot(slot) ? extPads[slot - kGameLocal].id : pad->GetCurrentID(slot);
++    return ExtBoxSlot(slot) ? PresentationID(extPads[slot - kGameLocal].id) : pad->GetCurrentID(slot);
+ }
+ kmCall(0x8061c244, BoxCurrentID);
+ kmCall(0x8061c9fc, BoxCurrentID);
+@@ -570,6 +611,9 @@ void BindPad(Input::RealControllerHolder &holder, Input::Controller *controller)
+     if (holder.curController != controller)
+         holder.SetController(controller, nullptr);
+     holder.controller3 = holder.curController;
++#ifdef SS8_WHEEL_BRIDGE
++    if (FillBridgeControllerParams(holder.params, holder.curController)) return;
++#endif
+     fillParams(&holder.params, holder.curController);
+ }
+ 
 diff --git "a/PulsarEngine/SplitScreen8/WheelBridge.cpp" "b/PulsarEngine/SplitScreen8/WheelBridge.cpp"
 new file mode 100644
 --- /dev/null
 +++ "b/PulsarEngine/SplitScreen8/WheelBridge.cpp"
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,309 @@
 +#ifdef SS8_WHEEL_BRIDGE
 +#include <kamek.hpp>
 +#include <core/rvl/OS/OS.hpp>
@@ -94,6 +259,7 @@ new file mode 100644
 +#include <SplitScreen8/WheelBridge.hpp>
 +#include <core/egg/mem/Heap.hpp>
 +#include <wheel_bridge_mailbox.h>
++#include <wheel_bridge_identity.h>
 +#include <wheel_bridge_build.h>
 +
 +namespace SplitScreen8 {
@@ -103,6 +269,7 @@ new file mode 100644
 +static u32 statusStorage[STATUS_SIZE / 4];
 +static u8 descriptor[DESCRIPTOR_SIZE];
 +static Receiver receiver;
++static WheelActionState nativeActions[4];
 +static bool initialized;
 +static u32 lastGeneration, statusGeneration;
 +static u32 sBridgeControllersStorage[(sizeof(BridgeWheelController) * 4 + 3) / 4];
@@ -143,6 +310,7 @@ new file mode 100644
 +static void Initialize(u32 nowMs) {
 +    const u32 session = (OS::GetTick() ^ u32(inputStorage)) | 1;
 +    receiver.Reset(session);
++    receiver.SetGameplayMode(true);
 +    Clear(descriptor, sizeof(descriptor));
 +    const char magic[8] = {'S','S','8','W','B','R','G','1'};
 +    for (u32 i = 0; i < 8; ++i) descriptor[i] = magic[i];
@@ -171,6 +339,9 @@ new file mode 100644
 +    this->isDriftAuto = false;
 +    this->hasError = false;
 +    this->battery = 4;
++    ResetWheelNative(this->wheelState);
++    this->updatedTick = 0xffffffffU;
++    this->lastHostSession = this->lastSourceSession = 0;
 +}
 +
 +BridgeWheelController::~BridgeWheelController() {}
@@ -179,21 +350,53 @@ new file mode 100644
 +    this->slotId = slot;
 +}
 +
++void BridgeWheelController::ResetSelf() {
++    // Native WiiController::ResetSelf only stops rumble. Keep filter lifetime
++    // separate from that virtual call (pause/rumble cleanup is not a new wheel).
++    StopRumble();
++}
++
++void BridgeWheelController::ResetWheelState() {
++    ResetWheelNative(this->wheelState);
++    this->updatedTick = 0xffffffffU;
++}
++
++void BridgeWheelController::SetDriftType(bool autoDrift) {
++    if (this->isDriftAuto != autoDrift) ResetWheelState();
++    this->isDriftAuto = autoDrift;
++}
++
++void BridgeWheelController::Init(bool autoDrift) {
++    ResetWheelState();
++    this->isDriftAuto = autoDrift;
++}
++
 +bool BridgeWheelController::IsFresh() const {
 +    if (!initialized || !receiver.active || slotId >= 4) return false;
 +    const SnapshotSlot &slot = receiver.slots[slotId];
++    const u32 required = FLAG_CONNECTED | FLAG_CALIBRATED | FLAG_SAMPLE_VALID;
 +    return receiver.hasSample[slotId] &&
-+           ((slot.flags & (FLAG_CONNECTED | FLAG_SAMPLE_VALID)) == (FLAG_CONNECTED | FLAG_SAMPLE_VALID)) &&
++           ((slot.flags & required) == required) &&
 +           !(slot.flags & FLAG_EVENT_OVERFLOW);
 +}
 +
 +bool BridgeWheelController::HasConfirm() const {
 +    if (!IsFresh()) return false;
-+    const SnapshotSlot &slot = receiver.slots[slotId];
-+    return (slot.buttons & (WPAD::WPAD_BUTTON_2 | WPAD::WPAD_BUTTON_A)) != 0;
++    return (this->uiinputState.buttonActions & 1) != 0;
 +}
 +
 +void BridgeWheelController::UpdateImpl(Input::State &state, Input::UIState &uiState) {
++    if (this->updatedTick == receiver.guestTick) {
++        state = this->inputState;
++        uiState = this->uiinputState;
++        return;
++    }
++    if (this->lastHostSession != receiver.hostSession || this->lastSourceSession != receiver.sourceSession) {
++        ResetWheelNative(this->wheelState);
++        this->lastHostSession = receiver.hostSession;
++        this->lastSourceSession = receiver.sourceSession;
++    }
++    this->updatedTick = receiver.guestTick;
 +    state.buttonActions = 0;
 +    state.buttonRaw = 0;
 +    state.stick.x = 0.0f;
@@ -202,6 +405,7 @@ new file mode 100644
 +    state.quantisedStickY = 7;
 +    state.motionControlFlick = 0;
 +    state.motionControlFlickUnmirrored = 0;
++    state.unknown_0x14[0] &= ~0x80;
 +
 +    uiState.buttonActions = 0;
 +    uiState.rawButtons = 0;
@@ -209,56 +413,24 @@ new file mode 100644
 +    uiState.stickY = 0.0f;
 +    uiState.quantisedStickX = 7;
 +    uiState.quantisedStickY = 7;
++    uiState.unknown_0x1A[0x30 - 0x1a] &= ~0x80;
 +
-+    if (!IsFresh()) return;
++    if (!IsFresh()) {
++        if (this->wheelState.initialized) ResetWheelNative(this->wheelState);
++        return;
++    }
 +
 +    const SnapshotSlot &slot = receiver.slots[slotId];
-+    const u16 buttons = slot.buttons;
-+
-+    // Steering from accelerometer: 128 units = 1g.
-+    float steer = 0.0f;
-+    const int rawX = slot.accelX;
-+    if (rawX < -8 || rawX > 8) {
-+        steer = float(rawX) / 100.0f;
-+        if (steer < -1.0f) steer = -1.0f;
-+        if (steer > 1.0f) steer = 1.0f;
++    u16 buttons = 0;
++    u8 trickPulse = 0;
++    if (!receiver.ConsumeActions(slotId, buttons, trickPulse)) {
++        if (this->wheelState.initialized) ResetWheelNative(this->wheelState);
++        return;
 +    }
-+    const int qX = 7 + int(steer * 7.0f + (steer >= 0.0f ? 0.5f : -0.5f));
-+    const u8 quantX = u8(qX < 0 ? 0 : (qX > 14 ? 14 : qX));
-+
-+    state.quantisedStickX = quantX;
-+    state.stick.x = float(int(quantX) - 7) / 7.0f;
-+    state.buttonRaw = buttons;
-+
-+    // Physical gameplay buttons (State)
-+    if (buttons & WPAD::WPAD_BUTTON_2) {
-+        state.buttonActions |= 0x1;  // Accelerate
-+    }
-+    if (buttons & WPAD::WPAD_BUTTON_1) {
-+        state.buttonActions |= 0x2;  // Brake / Reverse
-+    }
-+    if (buttons & 0x000F) {
-+        state.buttonActions |= 0x4;  // Item (D-Pad direction)
-+    }
-+    if (buttons & WPAD::WPAD_BUTTON_B) {
-+        if (!this->isDriftAuto) {
-+            state.buttonActions |= 0x8;  // Manual drift / hop
-+        } else {
-+            state.buttonActions |= 0x4;  // In Auto drift, B uses item
-+        }
-+    }
-+    if (buttons & WPAD::WPAD_BUTTON_A) {
-+        state.buttonActions |= 0x20; // Rear view
-+    }
-+    if (slot.eventFlags & EVENT_FLAG_TRICK) {
-+        state.motionControlFlick = 1; // Trick / Wheelie (shake)
-+        state.motionControlFlickUnmirrored = 1;
-+    }
++    StepWheelNative(this->wheelState, slot, buttons, this->isDriftAuto, trickPulse, state);
 +
 +    // UI Menu inputs (UIState)
 +    uiState.rawButtons = buttons;
-+    uiState.quantisedStickX = quantX;
-+    uiState.stickX = state.stick.x;
 +
 +    if (buttons & (WPAD::WPAD_BUTTON_2 | WPAD::WPAD_BUTTON_A)) {
 +        uiState.buttonActions |= 0x1;  // Confirm (2 or A)
@@ -284,16 +456,83 @@ new file mode 100644
 +    if (buttons & WPAD::WPAD_BUTTON_MINUS) {
 +        uiState.buttonActions |= 0x100; // Minus
 +    }
-+    if (quantX < 4) {
-+        uiState.buttonActions |= 0x20; // Left stick in UI
-+    } else if (quantX > 10) {
-+        uiState.buttonActions |= 0x40; // Right stick in UI
++    // Original WiiController::UpdateImpl publishes UI validity at UIState+0x30.
++    uiState.unknown_0x1A[0x30 - 0x1a] |= 0x80;
++}
++
++void ResetWheelBridgeScene() {
++    for (u32 i = 0; i < 4; ++i) ResetWheelActions(nativeActions[i]);
++    if (initialized) {
++        for (u32 i = 0; i < 4; ++i) sBridgeControllers[i].ResetWheelState();
 +    }
 +}
++
++extern "C" void ss8WheelNativeUpdateStatesCore(Input::WiiController*, Input::UIState*, Input::State*);
++extern "C" void ss8WheelNativeMotionInit(Input::MotionController*, bool);
++
++// The original WiiController::Init reaches this call on real initialization
++// and extension/reconnection changes. Do not confuse ResetSelf's rumble-stop
++// dispatch with sensor initialization or reset state during ordinary report gaps.
++static void InitializeNativeWheelActions(Input::MotionController* motion, bool autoDrift) {
++    ss8WheelNativeMotionInit(motion, autoDrift);
++    Input::Manager* manager = Input::Manager::sInstance;
++    if (manager != nullptr && motion != nullptr) {
++        for (u32 i = 0; i < kGameLocal; ++i) {
++            if (manager->wiiControllers[i].motionController == motion) ResetWheelActions(nativeActions[i]);
++        }
++    }
++}
++kmCall(0x8051f2e8, InitializeNativeWheelActions);
++
++// Postprocess only the requested action binding for the four native Wheels.
++// The original motion/KPAD update has already run at this verified PAL site.
++// The native core decoder keeps its original UI behavior, steering and flick.
++static void UpdateNativeWheelActions(Input::WiiController* controller, Input::UIState* ui, Input::State* state) {
++    ss8WheelNativeUpdateStatesCore(controller, ui, state);
++    Input::Manager* manager = Input::Manager::sInstance;
++    // This callsite is exclusively the Core/Wheel branch. GetType() still
++    // contains the previous extension type until UpdateImpl's later store.
++    if (manager == nullptr || controller == nullptr || state == nullptr)
++        return;
++    const int channel = controller->GetChannel();
++    if (channel < 0 || channel >= kGameLocal || controller != &manager->wiiControllers[channel])
++        return;
++    ApplyWheelActions(nativeActions[channel], state->buttonRaw, controller->isDriftAuto, *state);
++}
++kmCall(0x8051fe4c, UpdateNativeWheelActions);
 +
 +BridgeWheelController &GetBridgeController(u32 slot) {
 +    if (!initialized) Initialize(OS::TicksToMilliseconds(OS::GetTime()));
 +    return sBridgeControllers[slot < 4 ? slot : 0];
++}
++
++static int BridgeControllerIndex(const Input::Controller* controller) {
++    if (initialized && controller != nullptr) {
++        for (u32 i = 0; i < 4; ++i) {
++            if (controller == &sBridgeControllers[i]) return i;
++        }
++    }
++    return -1;
++}
++
++bool IsBridgeController(const Input::Controller* controller) {
++    return BridgeControllerIndex(controller) >= 0;
++}
++
++bool FillBridgeControllerParams(Input::ControllerParams& params, const Input::Controller* controller) {
++    typedef char CheckControllerParamsSize[sizeof(Input::ControllerParams) == 0x10 ? 1 : -1];
++    const int index = BridgeControllerIndex(controller);
++    return index >= 0 && WiiBridgeIdentity::FillProxyParams(reinterpret_cast<u8*>(&params), index);
++}
++
++u32 StableWheelControllerID(const Input::RealControllerHolder* holder) {
++    if (holder == nullptr) return 0;
++    const int index = BridgeControllerIndex(holder->curController);
++    return index >= 0 ? WiiBridgeIdentity::SlotId(index) : calculateID(holder);
++}
++
++u32 DisplayWheelControllerID(u32 id) {
++    return WiiBridgeIdentity::DisplayId(id);
 +}
 +
 +void UpdateWheelBridge() {
@@ -324,13 +563,19 @@ diff --git "a/PulsarEngine/SplitScreen8/WheelBridge.hpp" "b/PulsarEngine/SplitSc
 new file mode 100644
 --- /dev/null
 +++ "b/PulsarEngine/SplitScreen8/WheelBridge.hpp"
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,62 @@
 +#ifndef SS8_WHEEL_BRIDGE_HPP
 +#define SS8_WHEEL_BRIDGE_HPP
 +
 +#include <kamek.hpp>
 +#include <MarioKartWii/System/Identifiers.hpp>
 +#include <MarioKartWii/Input/Controller.hpp>
++#include <SplitScreen8/WheelNative.hpp>
++
++namespace Input {
++class ControllerParams;
++class RealControllerHolder;
++}
 +
 +namespace SplitScreen8 {
 +
@@ -340,32 +585,273 @@ new file mode 100644
 +    ~BridgeWheelController() override;
 +
 +    void SetSlot(u32 slotId);
++    void ResetWheelState();
 +
 +    void UpdateImpl(Input::State &state, Input::UIState &uiState) override;
 +    ControllerType GetType() const override { return WHEEL; }
 +    bool HasRumble() const override { return false; }
 +    void ActivateRumble() override {}
 +    void StopRumble() override {}
-+    void ResetSelf() override {}
++    void ResetSelf() override;
 +    double func_0x24() override { return 0.0; }
 +    void TogglePointer(bool enablePointer) override {}
 +    bool isPointerEnabled() const override { return false; }
 +    void UpdateBatteryField() override {}
 +    int GetChannel() const override { return slotId; }
-+    void SetDriftType(bool isDriftAuto) override { this->isDriftAuto = isDriftAuto; }
++    void SetDriftType(bool isDriftAuto) override;
 +    const nw4r::ut::detail::RuntimeTypeInfo *GetRuntimeTypeInfo() const override { return nullptr; }
 +    u8 GetRemainingBattery() const override { return 4; }
-+    void Init(bool isDriftAuto) override { this->isDriftAuto = isDriftAuto; }
++    void Init(bool isDriftAuto) override;
 +
 +    bool IsFresh() const;
 +    bool HasConfirm() const;
 +
 +    u32 slotId;
++
++private:
++    WheelNativeState wheelState;
++    u32 updatedTick;
++    u32 lastHostSession;
++    u32 lastSourceSession;
 +};
 +
 +// Called per frame from UpdateExtHolders.
 +void UpdateWheelBridge();
++void ResetWheelBridgeScene();
 +BridgeWheelController &GetBridgeController(u32 slot);
++bool IsBridgeController(const Input::Controller* controller);
++bool FillBridgeControllerParams(Input::ControllerParams& params, const Input::Controller* controller);
++u32 StableWheelControllerID(const Input::RealControllerHolder* holder);
++u32 DisplayWheelControllerID(u32 id);
++
++}  // namespace SplitScreen8
++#endif
+diff --git "a/PulsarEngine/SplitScreen8/WheelNative.cpp" "b/PulsarEngine/SplitScreen8/WheelNative.cpp"
+new file mode 100644
+--- /dev/null
++++ "b/PulsarEngine/SplitScreen8/WheelNative.cpp"
+@@ -0,0 +1,169 @@
++#ifdef SS8_WHEEL_BRIDGE
++#include <SplitScreen8/WheelNative.hpp>
++#include <wii_bridge_protocol.h>
++
++namespace SplitScreen8 {
++namespace {
++
++enum {
++    RAW_LEFT = 0x0001,
++    RAW_RIGHT = 0x0002,
++    RAW_DOWN = 0x0004,
++    RAW_UP = 0x0008,
++    RAW_2 = 0x0100,
++    RAW_1 = 0x0200,
++    RAW_B = 0x0400,
++    RAW_A = 0x0800,
++    ACTION_ACCELERATE = 0x0001,
++    ACTION_BRAKE = 0x0002,
++    ACTION_ITEM = 0x0004,
++    ACTION_DRIFT = 0x0008,
++    ACTION_REARVIEW = 0x0020
++};
++
++// KPADStatus's native prefix. Steering takes calibrated accelerometer values
++// and the item decoders use the separate equivalent Wheel hold/trigger/release.
++struct SensorInput {
++    u32 hold, trigger, release;
++    f32 x, y, z;
++};
++struct ItemInput {
++    u32 hold, trigger, release;
++};
++typedef char CheckSensorInputSize[sizeof(SensorInput) == 0x18 ? 1 : -1];
++typedef char CheckItemInputSize[sizeof(ItemInput) == 0x0c ? 1 : -1];
++
++extern "C" {
++void ss8WheelNativeReset(void* owner, void* subState, u32 autoDrift);
++void ss8WheelNativeUpdate(void* owner, void* subState, const SensorInput* input);
++void ss8WheelNativeScalarFilter(void* owner, f32* component, f32 value);
++void ss8WheelNativeItemManual(void* owner, u16* actions, const ItemInput* input, u8* direction);
++void ss8WheelNativeItemAutomatic(void* owner, u16* actions, const ItemInput* input, u8* direction);
++void ss8WheelNativeSetStickXMirrorCheck(Input::State* state, u8 quantised);
++void ss8WheelNativeSetMotionControlFlick(Input::State* state, u8 flick);
++extern f32 ss8WheelNativeKpadThreshold;
++extern f32 ss8WheelNativeKpadGain;
++extern u32 ss8WheelNativeKpadFlags;
++}
++
++// Match the original fctiwz + low-byte sign extension, including NaN/Inf. A C++
++// float-to-int cast would be undefined for those inputs and can use helper code.
++static asm s32 SignedLowByte(f32 value) {
++    nofralloc;
++    stwu r1, -0x10(r1);
++    fctiwz f0, f1;
++    stfd f0, 0x8(r1);
++    lwz r3, 0xc(r1);
++    extsb r3, r3;
++    addi r1, r1, 0x10;
++    blr;
++}
++
++static void FillItems(WheelActionState& state, bool autoDrift, Input::State& output) {
++    u32 hold = output.buttonRaw & 0x000f;
++    if (output.buttonRaw & RAW_B) hold |= RAW_DOWN;
++    // In Wheel orientation native raw LEFT/RIGHT throw backward/forward. They
++    // override B's hold direction, releasing a held item without waiting for B up.
++    if (hold & (RAW_LEFT | RAW_RIGHT)) hold &= ~(RAW_UP | RAW_DOWN);
++    ItemInput input;
++    input.hold = hold;
++    input.trigger = hold & ~state.previousItemHold;
++    input.release = state.previousItemHold & ~hold;
++    state.previousItemHold = hold;
++    u16 actions = output.buttonActions & ~ACTION_ITEM;
++    u8 direction = 7;
++    if (autoDrift)
++        ss8WheelNativeItemAutomatic(state.items, &actions, &input, &direction);
++    else
++        ss8WheelNativeItemManual(state.items, &actions, &input, &direction);
++    output.buttonActions = actions;
++    output.quantisedStickY = direction;
++    output.stick.z = (f32(direction) - 7.0f) / 7.0f;
++}
++
++}  // namespace
++
++void ResetWheelNative(WheelNativeState& state) {
++    u32* words = reinterpret_cast<u32*>(&state);
++    for (u32 i = 0; i < sizeof(state) / sizeof(u32); ++i) words[i] = 0;
++}
++
++void ResetWheelActions(WheelActionState& state) {
++    u32* words = reinterpret_cast<u32*>(&state);
++    for (u32 i = 0; i < sizeof(state) / sizeof(u32); ++i) words[i] = 0;
++}
++
++void ApplyWheelActions(WheelActionState& state, u16 rawButtons, bool autoDrift, Input::State& output) {
++    if (!state.initialized || state.autoDrift != u32(autoDrift)) {
++        ResetWheelActions(state);
++        state.initialized = 1;
++        state.autoDrift = autoDrift;
++    }
++    u16 actions = 0;
++    if (rawButtons & RAW_2) actions |= ACTION_ACCELERATE;
++    if (rawButtons & RAW_1) actions |= ACTION_BRAKE;
++    if (rawButtons & RAW_A) actions |= ACTION_REARVIEW;
++    if ((rawButtons & (RAW_1 | RAW_2)) == (RAW_1 | RAW_2) &&
++        ((state.previousRaceActions & ACTION_DRIFT) || !(state.previousRawButtons & RAW_1)))
++        actions |= ACTION_DRIFT;
++    output.buttonActions = actions;
++    output.buttonRaw = rawButtons;
++    FillItems(state, autoDrift, output);
++    state.previousRawButtons = rawButtons;
++    state.previousRaceActions = output.buttonActions;
++}
++
++u8 QuantiseWheelNativeSteering(f32 steering) {
++    // Separate fmuls in the original order: (1.08 * steering), then * 7.
++    const f32 scaled = 1.0800000429153442f * steering;
++    s32 offset = SignedLowByte(7.0f * scaled);
++    if (offset < -7) offset = -7;
++    if (offset > 7) offset = 7;
++    return u8(offset + 7);
++}
++
++void StepWheelNative(WheelNativeState& state, const WiiBridgeProtocol::SnapshotSlot& sensor,
++                     u16 rawButtons, bool autoDrift, u8 trickPulse, Input::State& output) {
++    if (!state.initialized || state.autoDrift != u32(autoDrift)) {
++        ResetWheelNative(state);
++        u8* bytes = reinterpret_cast<u8*>(state.wheel);
++        ss8WheelNativeReset(bytes, bytes + 0x18, autoDrift);
++        state.autoDrift = autoDrift;
++        state.initialized = 1;
++    }
++
++    SensorInput input;
++    input.hold = rawButtons;
++    input.trigger = rawButtons & ~u32(state.actions.previousRawButtons);
++    input.release = state.actions.previousRawButtons & ~u32(rawButtons);
++    input.x = f32(sensor.accelX) / 128.0f;
++    input.y = f32(sensor.accelY) / 128.0f;
++    input.z = f32(sensor.accelZ) / 128.0f;
++
++    u8* sdk = reinterpret_cast<u8*>(state.sdk);
++    const f32 threshold = ss8WheelNativeKpadThreshold;
++    const f32 gain = ss8WheelNativeKpadGain;
++    if (threshold >= 0.0f && gain > 0.0f && gain <= 1.0f) {
++        *reinterpret_cast<f32*>(sdk + 0x9c) = threshold;
++        *reinterpret_cast<f32*>(sdk + 0xa0) = gain;
++        *reinterpret_cast<u32*>(sdk + 0x534) = ss8WheelNativeKpadFlags;
++        f32* components = &input.x;
++        for (u32 axis = 0; axis < 3; ++axis) {
++            f32* filtered = reinterpret_cast<f32*>(sdk + 0x0c + axis * sizeof(f32));
++            ss8WheelNativeScalarFilter(sdk, filtered, components[axis]);
++            components[axis] = *filtered;
++        }
++    }
++    u8* wheelBytes = reinterpret_cast<u8*>(state.wheel);
++    ss8WheelNativeUpdate(wheelBytes, wheelBytes + 0x18, &input);
++    const f32 steering = *reinterpret_cast<f32*>(wheelBytes + 0x54);
++
++    ss8WheelNativeSetStickXMirrorCheck(&output, QuantiseWheelNativeSteering(steering));
++    ApplyWheelActions(state.actions, rawButtons, autoDrift, output);
++    // The native setter performs any left/right mirror adjustment exactly once.
++    ss8WheelNativeSetMotionControlFlick(&output, trickPulse <= 4 ? trickPulse : 0);
++    output.unknown_0x14[0] |= 0x80;
++}
++
++}  // namespace SplitScreen8
++#endif
+diff --git "a/PulsarEngine/SplitScreen8/WheelNative.hpp" "b/PulsarEngine/SplitScreen8/WheelNative.hpp"
+new file mode 100644
+--- /dev/null
++++ "b/PulsarEngine/SplitScreen8/WheelNative.hpp"
+@@ -0,0 +1,50 @@
++#ifndef SS8_WHEEL_NATIVE_HPP
++#define SS8_WHEEL_NATIVE_HPP
++
++#include <MarioKartWii/Input/InputState.hpp>
++
++namespace WiiBridgeProtocol {
++struct SnapshotSlot;
++}
++
++namespace SplitScreen8 {
++
++// Private state for one bridged Wheel. No native Wii/KPAD channel is aliased.
++// Keep this trivially constructible: the game module loads before StaticR.rel.
++struct WheelActionState {
++    u32 items[5];
++    u32 previousItemHold;
++    u16 previousRawButtons;
++    u16 previousRaceActions;
++    u32 initialized;
++    u32 autoDrift;
++};
++struct WheelNativeState {
++    u32 wheel[0x90 / 4];
++    u32 sdk[0x538 / 4];
++    WheelActionState actions;
++    u32 initialized;
++    u32 autoDrift;
++};
++typedef char CheckWheelActionStateSize[sizeof(WheelActionState) == 0x24 ? 1 : -1];
++typedef char CheckWheelNativeStateSize[sizeof(WheelNativeState) == 0x5f4 ? 1 : -1];
++typedef char CheckWheelNativeInputStateSize[sizeof(Input::State) == 0x18 ? 1 : -1];
++
++void ResetWheelNative(WheelNativeState& state);
++void ResetWheelActions(WheelActionState& state);
++
++// Shared desired actions for bridged and native Wheels. Preserve original
++// steering X and original flick; item direction Y belongs to this action map.
++void ApplyWheelActions(WheelActionState& state, u16 rawButtons, bool autoDrift, Input::State& output);
++
++// The caller validates freshness and invokes exactly once per input tick. Raw
++// buttons and trickPulse come from ordered input events, never eventFlags.
++// trickPulse: 0 none, 1 up, 2 down, 3 left, 4 right.
++void StepWheelNative(WheelNativeState& wheel, const WiiBridgeProtocol::SnapshotSlot& sensor,
++                     u16 rawButtons, bool autoDrift, u8 trickPulse, Input::State& output);
++
++// Original signed-low-byte fctiwz path, exposed for independent PPC checks.
++u8 QuantiseWheelNativeSteering(f32 steering);
 +
 +}  // namespace SplitScreen8
 +#endif

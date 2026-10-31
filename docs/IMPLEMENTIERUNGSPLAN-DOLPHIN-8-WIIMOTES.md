@@ -2,6 +2,8 @@
 
 Stand: 24.10.2026 · Zielbranch: `esp32-support` · Status: Planung, keine Implementierung · ergänzt um getrennten Entwicklungsrechner und Ziel-Laptop
 
+**Fortschreibung 25.10.2026:** Das ist der ursprüngliche Plan; den inzwischen implementierten und geprüften Stand führt [IMPLEMENTIERUNGSSTAND.md](IMPLEMENTIERUNGSSTAND.md). Nach erfolgreichem manuellem Stunttest hat der Nutzer die Gerätezuordnung geändert: Wiimotes sollen automatisch freie P5–P8-Plätze erhalten und ohne manuelle MAC-Konfiguration austauschbar sein. Dieser Wunsch ersetzt frühere Vorgaben zu verpflichtenden festen MAC-Reservierungen. Aktive Spieler behalten ihren Platz; bekannte Geräte bevorzugen beim Wiederverbinden ihren bisherigen freien Platz. Die technische Identitätsprüfung bleibt zur korrekten Eingabe-/ACK-Zuordnung erhalten. Aktuelle Bedienung: [START-8-WIIMOTES.md](START-8-WIIMOTES.md).
+
 ## 1. Auftrag, Ziel und Arbeitsgrundlage
 
 Dieser Plan konkretisiert das bereitgestellte `PROJEKTBRIEFING-DOLPHIN-8-WIIMOTES.md` für das aktuell ausgecheckte Repository. Der aktuelle Nutzerauftrag ist die Erstellung eines Plans. Die im Briefing beschriebenen Build-, Installations-, Firmware- und Testschritte sind deshalb hier geplante Arbeitspakete; sie wurden durch die Erstellung dieses Dokuments nicht ausgeführt.

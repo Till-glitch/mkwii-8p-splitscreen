@@ -24,6 +24,15 @@ extern "C" unsigned int ss8_receiver_size() {
 extern "C" void ss8_reset(Receiver* receiver, uint32_t guestSession) {
     receiver->Reset(guestSession);
 }
+extern "C" void ss8_gameplay(Receiver* receiver, uint32_t enabled) {
+    receiver->SetGameplayMode(enabled != 0);
+}
+extern "C" unsigned int ss8_consume(Receiver* receiver, uint32_t index, uint8_t* output) {
+    uint16_t buttons = 0; uint8_t trick = 0;
+    const bool fresh = receiver->ConsumeActions(index, buttons, trick);
+    Write16(output, buttons); output[2] = trick; output[3] = fresh ? 1 : 0;
+    return fresh ? 1 : 0;
+}
 extern "C" unsigned int ss8_accept(Receiver* receiver, const uint8_t* input, uint32_t nowMs) {
     return receiver->Accept(input, nowMs) ? 1 : 0;
 }

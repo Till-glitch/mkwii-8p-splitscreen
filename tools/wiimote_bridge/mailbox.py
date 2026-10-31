@@ -198,6 +198,22 @@ class GuestMailbox:
             return GuestStatus.decode(data, guest_session=self.descriptor.guest_session)
         raise MailboxBusyError("Guest status is busy; no unbounded read retry")
 
+    def renew_host_session(self) -> None:
+        """Start a neutral guest boundary after a controller binding changes.
+
+        Raw device counters may restart or move to another logical slot. A new
+        host session makes the receiver discard old actions and ACKs before
+        accepting those counters, without changing the transport boot session.
+        Generation stays monotonic so every commit remains observable.
+        """
+        if self._verify_descriptor() != self.descriptor:
+            raise MailboxError("Guest restarted or descriptor changed; reconnect explicitly")
+        previous = self.host_session
+        self.host_session = secrets.randbits(32) or 1
+        if self.host_session == previous:
+            self.host_session = (previous % 0xFFFFFFFF) + 1
+        self.publish_sequence = 0
+
     def publish(self, view: HostView, *, host_elapsed_ms: int) -> int:
         current = self._verify_descriptor()
         if current != self.descriptor:

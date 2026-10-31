@@ -5,6 +5,9 @@
 *.sh text eol=lf
 *.ps1 text eol=lf
 
+# Unified diffs require a space prefix on empty context lines.
+*.patch -whitespace
+
 # Binary. Never touched, never diffed as text.
 *.png binary
 *.jpg binary

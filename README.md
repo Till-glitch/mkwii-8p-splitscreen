@@ -126,6 +126,16 @@ tools/menu_scripts/   scripted controller input for unattended test runs in Dolp
 
 ## Building
 
+### ESP32 Wheel bridge development
+
+The `esp32-support` branch adds an opt-in **Dolphin / Vanilla / PAL** input bridge for four additional real Wii Remotes. It uses the original PAL Wheel/item routines, ordered input events and separate bridge identities. The development PC needs USB for the ESP32; the target laptop is intended to use its internal Bluetooth for the other four remotes.
+
+Connected remotes are assigned automatically to free P5–P8 slots; no MAC configuration is needed. Existing players keep their slots, and pairing a replacement can reuse a disconnected ESP32 reservation. Fixed MAC assignments remain available through `--manual-mapping`.
+
+For another computer, follow the [laptop handoff](docs/LAPTOP-WEITERARBEIT.md). This development branch carries the Pulsar modifications as a versioned patch; apply it after initializing the submodules before building.
+
+Build with `tools/.venv/Scripts/python.exe tools/build_code.py --vanilla --wheel-bridge`. Hardware driving, reconnect and eight-real-controller acceptance remain separate from the completed software and synthetic emulator checks. See [setup and test instructions](docs/START-8-WIIMOTES.md) and the continually updated [implementation handoff](docs/IMPLEMENTIERUNGSSTAND.md).
+
 Windows only. Clone near the root of a drive: Kamek's link line names every object file and sits close to Windows'
 32,767-character limit, and rr-pulsar's deepest header passes 260 characters under a long path. A clone path of
 about 60 characters or less works (`C:\src\mkwii-8p-splitscreen`, for example).

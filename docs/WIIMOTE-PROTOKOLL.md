@@ -67,7 +67,7 @@ Die Codecs erlauben die vier Bits in beliebiger Kombination. Die Laufzeit prüft
 
 `event_flags & 1` (`EVENT_FLAG_TRICK`) zeigt einen momentan beobachteten Schüttel-/Stuntzustand zu Diagnosezwecken. Der Host oder Gast darf daraus keinen weiteren Stunt erzeugen. Zustellung erfolgt ausschließlich über Typ 3.
 
-Bei Sensor-Timeout oder Reconnect darf die Firmware alte wartende Ereignisse verwerfen. `last_event_sequence` und der Ereigniszähler werden dabei innerhalb derselben Bootsession nicht zurückgesetzt. Der Host nutzt den Snapshot als Grenze für eine bewusste Resynchronisierung und darf keine vorher verworfenen Aktionen nachholen. `FLAG_EVENT_OVERFLOW` wird von der aktuellen Firmware bis zum Wiederverbinden gelatcht. Die Regel muss in Host und Gast berücksichtigt werden, nicht im reinen Decoder.
+Bei Sensor-Timeout oder Reconnect darf die Firmware alte wartende Ereignisse verwerfen. `last_event_sequence` und der Ereigniszähler werden dabei innerhalb derselben Bootsession nicht zurückgesetzt. Der Host nutzt den Snapshot als Grenze für eine bewusste Resynchronisierung und darf keine vorher verworfenen Aktionen nachholen. `FLAG_EVENT_OVERFLOW` bleibt neutral gelatcht, bis die Firmware den passenden High-Watermark-ACK erhalten hat und alle physischen Tasten losgelassen wurden; ein kontrolliertes Wiederverbinden bildet ebenfalls eine neue neutrale Grenze. Die Regel muss in Host und Gast berücksichtigt werden, nicht im reinen Decoder.
 
 ## Typ 2: DEVICES
 
@@ -103,6 +103,23 @@ Mehrere Records desselben Slots sind erlaubt und bleiben in Rahmenreihenfolge er
 Ereignisse werden anhand von Bootsession, Slot und Ereignisfolge dedupliziert. Modulo-Reihenfolgen müssen wrap-sicher geprüft werden, mit einer eindeutigen begrenzten Distanz. Ein neuer Snapshot, Paketempfang oder Diagnose-ACK darf nicht als Nachweis einer Verarbeitung im Gast gelten.
 
 Die Queue ist begrenzt. Bei Verlust/Überlauf wird neutralisiert und sichtbar diagnostiziert. Wiederholungen und Nachlauf aus einer alten Sitzung dürfen keine späten Itemwürfe oder Stunts auslösen.
+
+### Gastverarbeitung: Diagnose und Gameplay sind getrennte Empfänger
+
+`shared/wheel_bridge_mailbox.h` behält den Speichervertrag mit 64-Byte-Descriptor, 640-Byte-Input und 96-Byte-Status bei. Die C++-Methode `Receiver.Reset(session)` startet weiterhin den diagnostischen Empfänger: Nach vollständiger Validierung werden Ereignisse diagnostisch konsumiert und bestätigt. Dieser Standardmodus belegt keine Verarbeitung durch einen Spieler-Holder.
+
+Die tatsächliche Wheel-Integration aktiviert ausdrücklich `Receiver.SetGameplayMode(true)`. Der Spielpfad ruft nach `Receiver.Tick(nowMs)` je Eingabeslot einmal `Receiver.ConsumeActions(slot, rawButtons, trickPulse)` auf. In diesem Modus gelten zusätzlich:
+
+- `Accept()` validiert vollständige Frames transaktional und hält bis zu 32 noch nicht konsumierte Ereignisse vor. Ein normaler gültiger Empfang allein erhöht den Ereignis-ACK nicht.
+- Ausstehende Ereignisse bleiben über neue Publishes und Ticks ohne Neupublish erhalten. Wiederholte Records werden anhand von Slot und Sequenz entdoppelt; eine veränderte Wiederholung derselben ausstehenden Ereignis-ID wird abgelehnt.
+- Pro Slot und Gasttick wird höchstens ein vollständiger Buttonzustandswechsel und höchstens ein Stuntimpuls verbraucht, in ihrer Reihenfolge. Press–Release–Press bleibt deshalb über drei Eingabeticks sichtbar, auch wenn der jüngste Snapshot bereits den Endzustand enthält.
+- Verschiedene Slots schreiten unabhängig fort. Ein zweiter Leser desselben Slots im selben Gasttick erhält die gecachte Ausgabe und verbraucht keine weiteren Ereignisse. Ein einzelner Stuntimpuls ist nur in diesem Tick aktiv; im nächsten Tick bleibt er ohne neues Ereignis null.
+- Ein konsumierter TRICK-Record liefert einen booleschen Impuls: `value != 0` wird zu `trickPulse = 1`. Die weitere native Stunt-/Wheelie-Bedeutung wird vom Wheeladapter bestimmt. `Snapshot.eventFlags` erzeugt niemals eine Spielaktion.
+- Snapshot-Buttons dürfen einen Ereigniszustand nur dann ersetzen, wenn keine ausstehenden Ereignisse dieses Slots mehr vorhanden sind und dessen konsumierte Ereignisfolge exakt dem Snapshot-High-Watermark entspricht. Ein älterer Snapshot kann damit keinen jüngeren Tastendruck zurücknehmen; ein neuerer Snapshot überspringt keinen noch fehlenden kurzen Druck.
+- Neue Host-/Quellsitzung, Disconnect, ungültiger Sensor-/Kalibrierzustand, Timeout und Überlauf bilden ausdrücklich neutrale Verwerfungsgrenzen. Alte bekannte Ereignisse werden dort verworfen und bis zum bekannten High-Watermark bestätigt, statt sie verspätet abzuspielen. Die erste Ausgabe nach einer solchen Grenze ist neutral. Diese ACKs dokumentieren bewussten neutralen Verzicht, keinen ausgeführten Itemwurf oder Stunt.
+- Ein wiederholter Publish verlängert weder das Alter eines Sensorreports noch die Verweildauer eines bereits ausstehenden Ereignisses. Nicht rechtzeitig konsumierte Ereignisse werden nach 250 ms neutral verworfen.
+
+Die Hardware- und Fahrgefühlabnahme bleibt ein eigener Schritt. Die PPC-Tests führen den tatsächlich mit CodeWarrior kompilierten Receiver aus; sie beweisen die Zustands-/Ereignisregeln dieses Bausteins, nicht die gesamte Funkstrecke oder sichtbare Stuntanimationen.
 
 ## Typ 4: ACK
 

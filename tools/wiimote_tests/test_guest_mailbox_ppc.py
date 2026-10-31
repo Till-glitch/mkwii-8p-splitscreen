@@ -77,7 +77,7 @@ def build_harness() -> tuple[bytes, dict[str, int]]:
         columns = line.split()
         if len(columns) == 3 and re.fullmatch(r"[0-9A-Fa-f]{8}", columns[0]):
             symbols[columns[2]] = int(columns[0], 16)
-    required = {"ss8_receiver_size", "ss8_reset", "ss8_accept", "ss8_tick", "ss8_status", "ss8_read_slot"}
+    required = {"ss8_receiver_size", "ss8_reset", "ss8_accept", "ss8_tick", "ss8_status", "ss8_read_slot", "ss8_gameplay", "ss8_consume"}
     if missing := required - symbols.keys():
         raise AssertionError(f"missing harness exports: {sorted(missing)}")
     code = binary.read_bytes()
@@ -88,8 +88,8 @@ def build_harness() -> tuple[bytes, dict[str, int]]:
 
 def slot(slot_id: int, *, flags: int = 7, buttons: int = 0x100,
          sequence: int = 1, age_ms: int = 0, last_event: int = 0,
-         reserved: int = 0) -> bytes:
-    return SNAPSHOT.pack(slot_id, flags, buttons, -128, 0, 128, age_ms, sequence, last_event, 0, reserved)
+         reserved: int = 0, event_flags: int = 0) -> bytes:
+    return SNAPSHOT.pack(slot_id, flags, buttons, -128, 0, 128, age_ms, sequence, last_event, event_flags, reserved)
 
 
 def event(slot_id: int, sequence: int, *, kind: int = 1, value: int = 0x100,
@@ -150,6 +150,22 @@ class GuestMailboxPpcTests(unittest.TestCase):
 
     def tick(self, now: int):
         self.invoke("ss8_tick", DATA, now)
+
+    def consume(self, index: int) -> tuple[bool, int, int]:
+        result = bool(self.invoke("ss8_consume", DATA, index, SLOT_OUTPUT))
+        buttons, trick, fresh = struct.unpack(">HBB", bytes(self.uc.mem_read(SLOT_OUTPUT, 4)))
+        self.assertEqual(result, bool(fresh))
+        return result, buttons, trick
+
+    def start_gameplay(self, *, last_event: int = 0):
+        self.invoke("ss8_gameplay", DATA, 1)
+        self.assertTrue(self.accept(input_bytes(slots=[slot(i, buttons=0, last_event=last_event) for i in range(4)]), 100))
+        self.tick(100)
+        for index in range(4):
+            self.assertEqual(self.consume(index), (False, 0, 0))
+        self.tick(101)
+        for index in range(4):
+            self.assertEqual(self.consume(index), (True, 0, 0))
 
     def status(self) -> dict:
         self.invoke("ss8_status", DATA, STATUS, 8)
@@ -369,6 +385,233 @@ class GuestMailboxPpcTests(unittest.TestCase):
         self.tick(351)
         self.assertEqual(self.read_slot(0)[2], 0x100)
         self.assertEqual(self.status()["flags"], READY | APPLIED)
+
+    def test_gameplay_does_not_activate_implicitly_in_diagnostic_mode(self):
+        self.assertTrue(self.accept(input_bytes(events=(event(0, 1),))))
+        self.tick(100)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 1)
+
+    def test_gameplay_initial_session_is_neutral_drop_boundary(self):
+        self.invoke("ss8_gameplay", DATA, 1)
+        slots = [slot(i, buttons=0, last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(slots=slots, events=(event(0, 1), event(0, 2, kind=2, value=1)))))
+        self.tick(100)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 2)
+        self.tick(101)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+
+    def test_gameplay_controller_replacement_accepts_restarted_counters_after_host_renewal(self):
+        self.invoke("ss8_gameplay", DATA, 1)
+        old = [slot(i, sequence=500, last_event=100 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(slots=old), 100))
+        self.tick(100)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 100)
+        replacement = [slot(i, sequence=1, buttons=0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(host=HOST + 1, slots=replacement), 110))
+        self.tick(110)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 0)
+        self.assertTrue(self.accept(input_bytes(host=HOST + 1, publish=2, slots=replacement,
+                                               events=(event(0, 1),)), 111))
+        self.tick(111)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.assertEqual(self.status()["event_ack"][0], 1)
+        self.assertEqual(self.status()["rejected"], 0)
+
+    def test_gameplay_press_release_survive_latest_released_snapshot(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots,
+                                               events=(event(0, 1), event(0, 2, value=0))), 110))
+        self.assertEqual(self.status()["event_ack"], (0, 0, 0, 0), "validation is not gameplay consumption")
+        self.tick(110)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.assertEqual(self.status()["event_ack"][0], 1)
+        self.assertEqual(self.consume(0), (True, 0x100, 0), "same-tick reads must be idempotent")
+        self.assertEqual(self.status()["event_ack"][0], 1)
+        self.tick(111)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 2)
+        self.tick(112)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+
+    def test_gameplay_press_release_press_are_three_distinct_ticks(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0x400 if i == 0 else 0, sequence=2,
+                      last_event=3 if i == 0 else 0) for i in range(4)]
+        records = (event(0, 1), event(0, 2, value=0), event(0, 3, value=0x400))
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=records), 110))
+        for now, value, ack in ((110, 0x100, 1), (111, 0, 2), (112, 0x400, 3)):
+            self.tick(now)
+            self.assertEqual(self.consume(0), (True, value, 0))
+            self.assertEqual(self.status()["event_ack"][0], ack)
+
+    def test_gameplay_trick_is_one_tick_and_snapshot_event_flags_are_diagnostic(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=1 if i == 0 else 0,
+                      event_flags=1) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=(event(0, 1, kind=2, value=1),)), 110))
+        self.tick(110)
+        self.assertEqual(self.consume(0), (True, 0, 1))
+        self.assertEqual(self.consume(0), (True, 0, 1))
+        self.tick(111)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+        self.assertEqual(self.consume(1), (True, 0, 0), "snapshot trick flag must not be a second event source")
+        self.assertTrue(self.accept(input_bytes(publish=3, slots=slots,
+                                               events=(event(0, 1, kind=2, value=1),)), 112))
+        self.tick(112)
+        self.assertEqual(self.consume(0), (True, 0, 0), "retransmitted trick must not repeat")
+
+    def test_gameplay_mixed_actions_preserve_order_and_other_slots_advance_independently(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=3 if i == 0 else (1 if i == 2 else 0)) for i in range(4)]
+        records = (event(0, 1), event(2, 1, value=0x400), event(0, 2, kind=2, value=1), event(0, 3, value=0))
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=records), 110))
+        self.tick(110)
+        self.assertEqual(self.consume(0), (True, 0x100, 1))
+        self.assertEqual(self.consume(2), (True, 0x400, 0))
+        self.assertEqual(self.status()["event_ack"], (2, 0, 1, 0))
+        self.tick(111)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 3)
+
+    def test_gameplay_future_snapshot_level_does_not_bypass_missing_events(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0x100 if i == 0 else 0, sequence=2,
+                      last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots), 110))
+        self.tick(110)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 0)
+
+    def test_gameplay_older_snapshot_does_not_undo_newer_consumed_event(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=(event(0, 1),)), 110))
+        self.tick(110)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.tick(111)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+
+    def test_gameplay_pending_events_survive_a_new_publish_that_omits_them(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=(event(0, 1), event(0, 2, value=0))), 110))
+        slots = [slot(i, buttons=0, sequence=3, last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=3, slots=slots), 115))
+        self.tick(115)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.tick(116)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+
+    def test_gameplay_changed_duplicate_and_event_gap_reject_atomically(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=(event(0, 1), event(0, 2, value=0))), 110))
+        self.assertFalse(self.accept(input_bytes(publish=3, slots=slots, events=(event(1, 1), event(0, 1, value=0x400))), 115))
+        self.assert_error(ERROR_EVENT, accepted=2)
+        self.assertEqual(self.status()["event_ack"], (0, 0, 0, 0))
+        self.assertEqual(self.status()["publish"], 2)
+        self.tick(116)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.assertEqual(self.consume(1), (True, 0, 0), "earlier records from rejected frame must not leak")
+        self.assertFalse(self.accept(input_bytes(publish=3, slots=slots, events=(event(0, 4),)), 117))
+        self.assert_error(ERROR_EVENT, accepted=2)
+
+    def test_gameplay_cache_overflow_rejects_without_losing_prior_events(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=32 if i == 0 else 0) for i in range(4)]
+        records = tuple(event(0, i, value=0x100 if i % 2 else 0) for i in range(1, 33))
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=records), 110))
+        self.assertFalse(self.accept(input_bytes(publish=3, slots=slots, events=(event(0, 33),)), 111))
+        self.assert_error(ERROR_EVENT, accepted=2)
+        self.tick(112)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.assertEqual(self.status()["event_ack"][0], 1)
+
+    def test_gameplay_timeout_discards_pending_events_and_does_not_replay_after_recovery(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=(event(0, 1), event(0, 2, kind=2, value=1))), 110))
+        self.tick(360)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 2)
+        slots = [slot(i, buttons=0, sequence=3, last_event=2 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=3, slots=slots), 361))
+        self.tick(361)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.tick(362)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+
+    def test_gameplay_disconnect_overflow_and_uncalibrated_slots_are_neutral_drop_boundaries(self):
+        self.start_gameplay()
+        slots = [slot(0, flags=0, last_event=10), slot(1, flags=15, last_event=20),
+                 slot(2, flags=5, last_event=30), slot(3, buttons=0, sequence=2)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots, events=(event(0, 11), event(1, 21, kind=2), event(2, 31))), 110))
+        self.tick(110)
+        for index in range(3):
+            self.assertEqual(self.consume(index), (False, 0, 0))
+        self.assertEqual(self.consume(3), (True, 0, 0))
+        self.assertEqual(self.status()["event_ack"][:3], (11, 21, 31))
+
+    def test_gameplay_new_source_or_host_discards_previous_queue(self):
+        self.start_gameplay()
+        self.assertTrue(self.accept(input_bytes(publish=2, events=(event(0, 1),)), 110))
+        slots = [slot(i, buttons=0, last_event=8 if i == 0 else 0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(host=HOST + 1, slots=slots, events=(event(0, 8, kind=2),)), 120))
+        self.tick(120)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 8)
+        self.assertTrue(self.accept(input_bytes(host=HOST + 1, source=SOURCE + 1, slots=[slot(i, buttons=0) for i in range(4)]), 130))
+        self.tick(130)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 0)
+
+    def test_gameplay_event_sequence_wrap_and_retransmission(self):
+        self.start_gameplay(last_event=0xFFFFFFFE)
+        slots = [slot(i, buttons=0, sequence=2, last_event=0 if i == 0 else 0xFFFFFFFE) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots,
+                                               events=(event(0, 0xFFFFFFFF), event(0, 0, value=0))), 110))
+        self.tick(110)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.assertEqual(self.status()["event_ack"][0], 0xFFFFFFFF)
+        self.tick(111)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 0)
+        self.assertTrue(self.accept(input_bytes(publish=3, slots=slots,
+                                               events=(event(0, 0xFFFFFFFF), event(0, 0, value=0))), 112))
+        self.tick(112)
+        self.assertEqual(self.consume(0), (True, 0, 0))
+
+    def test_gameplay_pending_event_age_is_not_refreshed_by_republishing_it(self):
+        self.start_gameplay()
+        records = (event(0, 1),)
+        for publish, now in ((2, 110), (3, 200), (4, 300)):
+            slots = [slot(i, buttons=0, sequence=publish, last_event=1 if i == 0 else 0) for i in range(4)]
+            self.assertTrue(self.accept(input_bytes(publish=publish, slots=slots, events=records), now))
+        self.tick(360)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertTrue(self.status()["flags"] & TIMEOUT)
+        self.assertEqual(self.status()["event_ack"][0], 1)
+
+    def test_gameplay_mode_switch_is_neutral_without_rewinding_event_ack(self):
+        self.start_gameplay()
+        slots = [slot(i, buttons=0, sequence=2, last_event=0) for i in range(4)]
+        self.assertTrue(self.accept(input_bytes(publish=2, slots=slots,
+                                               events=(event(0, 1), event(0, 2, value=0))), 110))
+        self.tick(110)
+        self.assertEqual(self.consume(0), (True, 0x100, 0))
+        self.assertEqual(self.status()["event_ack"][0], 1)
+        self.invoke("ss8_gameplay", DATA, 0)
+        self.assertEqual(self.status()["event_ack"][0], 2, "discard pending release without rewinding to snapshot zero")
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.invoke("ss8_gameplay", DATA, 1)
+        self.tick(111)
+        self.assertEqual(self.consume(0), (False, 0, 0))
+        self.assertEqual(self.status()["event_ack"][0], 2)
 
 
 if __name__ == "__main__":

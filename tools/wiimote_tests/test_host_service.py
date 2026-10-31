@@ -177,6 +177,128 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.service.ack_records()[0].acked_event_sequence, 1)
 
 
+class AutomaticAssignmentTests(unittest.TestCase):
+    def setUp(self):
+        self.service = BridgeService(DeviceRegistry(), automatic_assignment=True)
+        self.sequence = 0
+        self.addresses = {i: bytes.fromhex(f"0011223344{i + 1:02x}") for i in range(4)}
+
+    def identities(self, *, addresses=None, now=0, boot=42):
+        self.sequence += 1
+        addresses = self.addresses if addresses is None else addresses
+        return self.service.ingest(Frame(MessageKind.DEVICES, boot, self.sequence, now,
+            tuple(DeviceRecord(i, int(i in addresses), addresses.get(i, bytes(6))) for i in range(4))), now_ms=now)
+
+    def samples(self, connected, *, sample=1, highwater=0, now=0, boot=42):
+        self.sequence += 1
+        return self.service.ingest(Frame(MessageKind.SNAPSHOT, boot, self.sequence, now,
+            tuple(SnapshotSlot(i, 7 if i in connected else 0, 0, 128, 0, 0, 0,
+                               sample, highwater) for i in range(4))), now_ms=now)
+
+    def test_remembered_but_disconnected_devices_do_not_reserve_players(self):
+        self.identities()
+        self.assertEqual(self.service.assignments, {})
+        self.samples({3})
+        self.assertEqual(self.service.assignments, {3: 5})
+        view = self.service.view(now_ms=0)
+        self.assertEqual(view.players, (5,))
+        self.assertEqual(view.slots[0].flags, 7)
+
+    def test_later_connection_does_not_move_an_existing_player(self):
+        self.identities()
+        self.samples({2})
+        revision = self.service.routing_revision
+        self.samples({0, 2}, sample=2)
+        self.assertEqual(self.service.assignments, {2: 5, 0: 6})
+        self.assertGreater(self.service.routing_revision, revision)
+        revision = self.service.routing_revision
+        self.samples({0, 2}, sample=3)
+        self.identities()
+        self.assertEqual(self.service.routing_revision, revision)
+
+    def test_known_reconnection_prefers_previous_free_player_and_resets_counters(self):
+        self.identities()
+        self.samples({0, 1}, sample=500, highwater=50)
+        self.samples({1}, sample=501, highwater=50)
+        revision = self.service.routing_revision
+        self.samples({0, 1}, sample=1, highwater=0)
+        self.assertEqual(self.service.assignments, {1: 6, 0: 5})
+        self.assertEqual(self.service.slots[0].snapshot.sample_sequence, 1)
+        self.assertEqual(self.service.slots[0].last_consumed_event, 0)
+        self.assertGreater(self.service.routing_revision, revision)
+
+    def test_new_device_reclaims_disconnected_player_without_moving_connected_device(self):
+        self.identities()
+        self.samples({0, 1}, sample=100, highwater=8)
+        self.samples({1}, sample=101, highwater=8)
+        self.samples({1, 2}, sample=102, highwater=0)
+        self.assertEqual(self.service.assignments, {1: 6, 2: 5})
+        self.samples({0, 1, 2}, sample=103, highwater=0)
+        self.assertEqual(self.service.assignments, {1: 6, 2: 5, 0: 7})
+
+    def test_replacing_source_identity_discards_old_actions_at_new_routing_revision(self):
+        self.identities()
+        self.samples({0}, sample=100, highwater=0)
+        self.sequence += 1
+        self.service.ingest(event(sequence=self.sequence, number=1), now_ms=0)
+        self.assertEqual(len(self.service.view(now_ms=0).events), 1)
+        revision = self.service.routing_revision
+        self.addresses[0] = bytes.fromhex("AABBCCDDEEFF")
+        self.identities()
+        self.assertEqual(self.service.view(now_ms=0).events, ())
+        self.samples({0}, sample=1, highwater=0)
+        self.assertEqual(self.service.assignments, {0: 5})
+        self.assertGreater(self.service.routing_revision, revision)
+        self.assertEqual(self.service.ack_records()[0].acked_event_sequence, 0)
+        self.sequence += 1
+        self.service.ingest(event(sequence=self.sequence, number=1), now_ms=1)
+        self.assertEqual(self.service.view(now_ms=1).events[0].event_sequence, 1)
+        self.assertEqual(self.service.ack_records()[0].acked_event_sequence, 0)
+        # CLI accepts ACKs only from the matching renewed host-session.
+        self.service.acknowledge_guest([1, 0, 0, 0])
+        self.assertEqual(self.service.ack_records()[0].acked_event_sequence, 1)
+
+    def test_route_change_drops_other_pending_events_and_synchronizes_raw_highwater(self):
+        self.identities()
+        self.samples({0})
+        self.sequence += 1
+        self.service.ingest(event(sequence=self.sequence, number=1), now_ms=0)
+        self.assertEqual(len(self.service.view(now_ms=0).events), 1)
+        # A new route resets all four guest baselines; the older queued action
+        # is explicitly discarded and ACKed, not replayed into that new session.
+        self.samples({0, 1}, sample=2)
+        self.assertEqual(self.service.view(now_ms=0).events, ())
+        self.assertEqual(self.service.ack_records()[0].acked_event_sequence, 1)
+        self.assertEqual(self.service.view(now_ms=0).slots[0].last_event_sequence, 1)
+
+    def test_duplicate_device_identity_clears_routes_instead_of_ambiguous_routing(self):
+        self.identities()
+        self.samples({0})
+        self.addresses[1] = self.addresses[0]
+        self.assertFalse(self.identities())
+        self.assertEqual(self.service.assignments, {})
+        self.assertEqual(self.service.view(now_ms=0).players, ())
+
+    def test_boot_reset_starts_a_new_automatic_connection_order(self):
+        self.identities()
+        self.samples({0, 1})
+        revision = self.service.routing_revision
+        self.sequence = 0
+        self.identities(boot=99)
+        self.samples({1}, boot=99)
+        self.assertEqual(self.service.assignments, {1: 5})
+        self.assertGreater(self.service.routing_revision, revision)
+        self.assertFalse(self.service.ingest(devices(sequence=100, boot=42), now_ms=1))
+
+    def test_automatic_mode_ignores_manual_mac_reservations_and_never_mutates_registry(self):
+        registry = DeviceRegistry({normalize_mac(self.addresses[3]): 8})
+        self.service = BridgeService(registry, automatic_assignment=True)
+        self.identities()
+        self.samples({3})
+        self.assertEqual(self.service.assignments, {3: 5})
+        self.assertEqual(registry.player_for(self.addresses[3]), 8)
+
+
 class RecordingTests(unittest.TestCase):
     def test_round_trip_and_existing_file_refused(self) -> None:
         with temporary_directory() as directory:

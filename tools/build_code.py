@@ -135,7 +135,8 @@ BOOT_ITEMS = ("blooper", "pow", "thunder", "bullet", "mega", "star", "cloud")
 def prepare_wheel_bridge(engine: Path, gamesource: Path, cflags: list[str]) -> dict:
     """Import the shared ABI into this build without duplicate tracked headers."""
     shared = ROOT / "shared"
-    headers = [shared / "wii_bridge_protocol.h", shared / "wheel_bridge_mailbox.h"]
+    headers = [shared / "wii_bridge_protocol.h", shared / "wheel_bridge_mailbox.h",
+               shared / "wheel_bridge_identity.h"]
     sources = sorted(p for base in (engine, gamesource) for p in base.rglob("*")
                      if p.suffix.lower() in (".cpp", ".hpp", ".h", ".s", ".txt")
                      and p.name != "Version.cpp")
@@ -205,10 +206,10 @@ def main() -> int:
     ap.add_argument("--menu-script", action="store_true",
                     help="press pad buttons from boot as the copy's script says (debug build; install_8p.py script)")
     ap.add_argument("--wheel-bridge", action="store_true",
-                    help="opt-in PAL/vanilla diagnostic ESP32 mailbox (no gameplay input binding yet)")
+                    help="experimental PAL/vanilla Wheel input bridge (physical-controller acceptance pending)")
     args = ap.parse_args()
     if args.wheel_bridge and not args.vanilla:
-        ap.error("--wheel-bridge currently requires --vanilla (PAL diagnostic integration)")
+        ap.error("--wheel-bridge currently requires --vanilla (experimental PAL Wheel input)")
     debug, boot, vanilla = args.debug_screens, args.debug_boot, args.vanilla
     if vanilla and (args.boot_variant or args.boot_speedo):
         ap.error("--boot-variant and --boot-speedo are RR's; --vanilla has neither")
@@ -288,6 +289,8 @@ def main() -> int:
         if src.suffix not in (".cpp", ".S"):
             continue
         rel = src.relative_to(engine).as_posix()
+        if not args.wheel_bridge and rel in ("SplitScreen8/WheelBridge.cpp", "SplitScreen8/WheelNative.cpp"):
+            continue
         if vanilla and not (rel.startswith("SplitScreen8/") or rel in ("UI/SameCharacterSelect.cpp", "Dolphin/DolphinIOS.cpp")):
             continue
         obj = BUILD / "PulsarEngine" / src.relative_to(engine).with_suffix(".o")

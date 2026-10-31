@@ -26,8 +26,10 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", help="Explicit serial port (required if detection is ambiguous)")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--config", type=Path, default=Path("build/wiimote-bridge/config.json"))
+    parser.add_argument("--manual-mapping", action="store_true",
+                        help="Use saved MAC reservations instead of automatic P5..P8 assignment")
     parser.add_argument("--assign", action="append", default=[], metavar="MAC=PLAYER",
-                        help="Explicitly reserve a device for P5..P8 and persist it")
+                        help="Save a device reservation for optional --manual-mapping mode")
     parser.add_argument("--remove", action="append", default=[], metavar="MAC",
                         help="Explicitly remove a device reservation")
     parser.add_argument("--record", type=Path, help="Create a new raw serial JSONL recording (existing files refused)")
@@ -46,6 +48,8 @@ def argument_parser() -> argparse.ArgumentParser:
 
 
 def _registry(args: argparse.Namespace) -> DeviceRegistry:
+    if not (args.manual_mapping or args.assign or args.remove):
+        return DeviceRegistry()
     registry = DeviceRegistry.load(args.config)
     for address in args.remove:
         registry.remove(address)
@@ -57,7 +61,7 @@ def _registry(args: argparse.Namespace) -> DeviceRegistry:
             raise MappingError(f"Invalid assignment {assignment!r}: {exc}") from exc
     if args.remove or args.assign:
         registry.save(args.config)
-        print(f"Saved explicit device reservations to {args.config}")
+        print(f"Saved device reservations to {args.config} (used with --manual-mapping)")
     return registry
 
 
@@ -77,11 +81,29 @@ def _summary(service: BridgeService, parser: StreamParser, *, now_ms: int | None
                                "sequence": slot.sequence, "trick": slot.trick}
                               for slot in legacy.slots]} if legacy is not None else None)
     return json.dumps({"boot_session": view.boot_session, "players_fresh": list(view.players),
+                       "assignment_mode": "automatic" if service.automatic_assignment else "manual",
+                       "assignments": service.assignments,
                        "devices": service.devices, "sources": sources, "legacy_reference": legacy_view,
                        "faults": list(view.faults),
                        "pending_events": sum(len(state.pending) for state in service.slots),
                        "frames": parser.frames_decoded, "invalid_frames": parser.invalid_frames,
                        "discarded_bytes": parser.discarded_bytes, "service": service.counters}, sort_keys=True)
+
+
+def _publish_view(service: BridgeService, mailbox: GuestMailbox, *, now_ms: int,
+                  elapsed_ms: int, routing_revision: int) -> int:
+    view = service.view(now_ms=now_ms)
+    if service.routing_revision != routing_revision:
+        mailbox.renew_host_session()
+    mailbox.publish(view, host_elapsed_ms=elapsed_ms)
+    try:
+        status = mailbox.read_status()
+    except MailboxBusyError:
+        status = None
+    if (status is not None and status.host_session == mailbox.host_session
+            and status.source_session == service.boot_session and status.flags & 2):
+        service.acknowledge_guest(status.acknowledged_events)
+    return service.routing_revision
 
 
 def _replay(args: argparse.Namespace, service: BridgeService, parser: StreamParser) -> None:
@@ -137,6 +159,7 @@ def _serial(args: argparse.Namespace, service: BridgeService, parser: StreamPars
             next_publish = started_ms
             next_ack = started_ms
             ack_sequence = 0
+            routing_revision = service.routing_revision
             legacy = None
             while True:
                 now_ms = time.monotonic_ns() // 1_000_000
@@ -153,14 +176,9 @@ def _serial(args: argparse.Namespace, service: BridgeService, parser: StreamPars
                         else:
                             legacy = frame
                 if mailbox and service.boot_session is not None and now_ms >= next_publish:
-                    mailbox.publish(service.view(now_ms=now_ms), host_elapsed_ms=now_ms - started_ms)
-                    try:
-                        status = mailbox.read_status()
-                    except MailboxBusyError:
-                        status = None
-                    if (status is not None and status.host_session == mailbox.host_session
-                            and status.source_session == service.boot_session and status.flags & 2):
-                        service.acknowledge_guest(status.acknowledged_events)
+                    routing_revision = _publish_view(service, mailbox, now_ms=now_ms,
+                                                    elapsed_ms=now_ms - started_ms,
+                                                    routing_revision=routing_revision)
                     next_publish = now_ms + 16
                 if not mailbox:
                     service.drain_diagnostic_events()
@@ -207,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             parser.print_help()
             return 0
-        service = BridgeService(registry, timeout_ms=args.timeout_ms)
+        service = BridgeService(registry, timeout_ms=args.timeout_ms,
+                                automatic_assignment=not args.manual_mapping)
         stream = StreamParser(allow_w2=args.allow_w2)
         if args.replay:
             _replay(args, service, stream)

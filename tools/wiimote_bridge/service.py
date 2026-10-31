@@ -47,13 +47,22 @@ class BridgeService:
     A snapshot's sample counter advances only for a real radio sample. Repeated
     USB snapshots may lower validity but never refresh an unchanged sample.
     Ordered events remain queued until the guest confirms consuming them.
+
+    Automatic assignment is session-scoped. A caller publishing its views must
+    renew the guest host-session whenever routing_revision changes, before the
+    next publish, and reject ACKs from the previous host-session. This is the
+    existing mailbox reset boundary for replaced devices' lower radio counters.
     """
 
     def __init__(self, registry: DeviceRegistry, *, timeout_ms: int = 250,
-                 max_events_per_slot: int = 64) -> None:
+                 max_events_per_slot: int = 64, automatic_assignment: bool = False) -> None:
         if not 20 <= timeout_ms <= 5000 or not 1 <= max_events_per_slot <= 256:
             raise ValueError("Invalid timeout or event queue limit")
         self.registry = registry
+        self.automatic_assignment = automatic_assignment
+        self.routing_revision = 0
+        self._automatic_routes: dict[int, tuple[str, int]] = {}
+        self._preferred_players: dict[str, int] = {}
         self.timeout_ms = timeout_ms
         self.max_events_per_slot = max_events_per_slot
         self.boot_session: int | None = None
@@ -71,6 +80,66 @@ class BridgeService:
     def _now() -> int:
         return time.monotonic_ns() // 1_000_000
 
+    @property
+    def assignments(self) -> dict[int, int]:
+        """Current source-to-player routes; automatic routes require a connection.
+
+        A DEVICES table also contains disconnected NVS reservations. Those must
+        never consume a player slot merely because an old address was remembered.
+        """
+        if self.automatic_assignment:
+            return {source: player for source, (_, player) in self._automatic_routes.items()}
+        return {source: player for source, identity in self.devices.items()
+                if (player := self.registry.player_for(identity)) is not None}
+
+    def _routing_changed(self) -> None:
+        """A routing revision requires a new guest host-session before publishing.
+
+        All four guest filters/ACK baselines reset at that boundary. Drop queued
+        actions explicitly and ACK them to the radio rather than replaying them
+        with another device's identity or accepting a previous guest session ACK.
+        """
+        self.routing_revision += 1
+        for state in self.slots:
+            baseline = state.last_received_event
+            if state.snapshot and newer(state.snapshot.last_event_sequence, baseline):
+                baseline = state.snapshot.last_event_sequence
+            state.pending.clear()
+            state.last_received_event = state.last_consumed_event = baseline
+            if state.snapshot:
+                state.snapshot = replace(state.snapshot, last_event_sequence=baseline)
+
+    def _sync_automatic_routes(self) -> None:
+        if not self.automatic_assignment:
+            return
+        changed = False
+        for source, (identity, _) in list(self._automatic_routes.items()):
+            sample = self.slots[source].snapshot
+            if (self.devices.get(source) != identity or sample is None
+                    or not sample.flags & FLAG_CONNECTED):
+                del self._automatic_routes[source]
+                changed = True
+        occupied = {player for _, player in self._automatic_routes.values()}
+        for source, state in enumerate(self.slots):
+            identity = self.devices.get(source)
+            if (source in self._automatic_routes or identity is None or state.snapshot is None
+                    or not state.snapshot.flags & FLAG_CONNECTED):
+                continue
+            preferred = self._preferred_players.get(identity)
+            player = preferred if preferred is not None and preferred not in occupied else next(
+                (candidate for candidate in range(5, 9) if candidate not in occupied), None)
+            if player is None:
+                continue
+            self._automatic_routes[source] = (identity, player)
+            self._preferred_players.pop(identity, None)
+            self._preferred_players[identity] = player
+            if len(self._preferred_players) > 64:
+                del self._preferred_players[next(iter(self._preferred_players))]
+            occupied.add(player)
+            changed = True
+        if changed:
+            self._routing_changed()
+
     def _session(self, frame: Frame) -> bool:
         if frame.boot_session == 0 or frame.boot_session in self.retired_boot_sessions:
             return False
@@ -82,6 +151,10 @@ class BridgeService:
             self.transport_sequence = None
             self.devices.clear()
             self.slots = [SlotState() for _ in range(4)]
+            if self.automatic_assignment:
+                self._automatic_routes.clear()
+                self._preferred_players.clear()
+                self._routing_changed()
             self.counters["session_changes"] += 1
         return True
 
@@ -109,6 +182,7 @@ class BridgeService:
                 if address in identities.values():
                     # A repeated address is ambiguous; route none of this table.
                     self.devices.clear()
+                    self._sync_automatic_routes()
                     for state in self.slots:
                         state.fault = "duplicate device identity"
                     return False
@@ -117,10 +191,12 @@ class BridgeService:
                 if identities.get(source) != self.devices.get(source):
                     self.slots[source] = SlotState()
             self.devices = identities
+            self._sync_automatic_routes()
         elif frame.kind == MessageKind.SNAPSHOT:
             for record in frame.records:
                 assert isinstance(record, SnapshotSlot)
                 self._snapshot(record, now)
+            self._sync_automatic_routes()
         elif frame.kind == MessageKind.EVENTS:
             for record in frame.records:
                 assert isinstance(record, InputEvent)
@@ -131,6 +207,12 @@ class BridgeService:
         state = self.slots[record.slot_id]
         previous = state.snapshot
         disconnected = not record.flags & FLAG_CONNECTED
+        if (self.automatic_assignment and previous is not None
+                and not previous.flags & FLAG_CONNECTED and not disconnected):
+            # Reconnection starts fresh firmware counters even for the same MAC.
+            # The route's new guest host-session establishes the matching baseline.
+            self.slots[record.slot_id] = state = SlotState()
+            previous = None
         first = previous is None
         if disconnected or first:
             # Startup/disconnect is an explicit neutral synchronization boundary.
@@ -208,9 +290,9 @@ class BridgeService:
         events: list[tuple[int, InputEvent]] = []
         players: list[int] = []
         faults: list[str] = []
+        assignments = self.assignments
         for source, state in enumerate(self.slots):
-            identity = self.devices.get(source)
-            player = self.registry.player_for(identity) if identity else None
+            player = assignments.get(source)
             if player is None:
                 continue
             logical = player - 5
@@ -241,10 +323,7 @@ class BridgeService:
     def acknowledge_guest(self, acknowledged: tuple[int, ...] | list[int]) -> None:
         if len(acknowledged) != 4:
             raise ValueError("Guest ACK must contain four logical slots")
-        for source, identity in self.devices.items():
-            player = self.registry.player_for(identity)
-            if player is None:
-                continue
+        for source, player in self.assignments.items():
             sequence = acknowledged[player - 5]
             state = self.slots[source]
             if sequence == state.last_consumed_event:

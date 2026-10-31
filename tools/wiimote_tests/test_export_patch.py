@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 from tools.export_pulsar_patch import ExportError, export, find_git
@@ -53,6 +54,19 @@ class PatchExportTests(unittest.TestCase):
         target = self.repo / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
+
+    def unlink_fixture(self, path: Path) -> None:
+        # Windows indexing/antivirus can briefly retain a file after git status.
+        # Retry only sharing violations while cleaning a disposable fixture;
+        # never retry a failed exporter assertion or alter production behavior.
+        for attempt in range(10):
+            try:
+                path.unlink()
+                return
+            except PermissionError as exc:
+                if getattr(exc, "winerror", None) != 32 or attempt == 9:
+                    raise
+                time.sleep(0.02)
 
     def clone_baseline(self) -> Path:
         target = self.directory / "baseline-copy"
@@ -143,7 +157,7 @@ class PatchExportTests(unittest.TestCase):
                 with self.assertRaises(ExportError):
                     export(self.repo, self.output, self.manifest)
                 self.assertFalse(self.output.exists())
-                (self.repo / path).unlink()
+                self.unlink_fixture(self.repo / path)
 
     def test_modified_binary_tracked_source_fails_closed(self) -> None:
         self.write("PulsarEngine/SplitScreen8/Input.cpp", b"bad\0input")

@@ -1,16 +1,22 @@
 {
   "format_version": 1,
   "base_commit": "a9594663478325ca68ab8e8c3cf7fd332524e821",
-  "patch_sha256": "972d832164413a249a048cbc35f830326c3afcd98af812870266fd7d53106a2b",
+  "patch_sha256": "74545aaeb295ad3177fb5014de43f5082c98d08dba4925c5b285205ffc67b75d",
   "paths": [
     "GameSource/symbols.txt",
+    "PulsarEngine/SplitScreen8/Audio.cpp",
+    "PulsarEngine/SplitScreen8/Culling.cpp",
     "PulsarEngine/SplitScreen8/Input.cpp",
     "PulsarEngine/SplitScreen8/Join.cpp",
     "PulsarEngine/SplitScreen8/WheelBridge.cpp",
-    "PulsarEngine/SplitScreen8/WheelBridge.hpp"
+    "PulsarEngine/SplitScreen8/WheelBridge.hpp",
+    "PulsarEngine/SplitScreen8/WheelNative.cpp",
+    "PulsarEngine/SplitScreen8/WheelNative.hpp"
   ],
   "new_files": [
     "PulsarEngine/SplitScreen8/WheelBridge.cpp",
-    "PulsarEngine/SplitScreen8/WheelBridge.hpp"
+    "PulsarEngine/SplitScreen8/WheelBridge.hpp",
+    "PulsarEngine/SplitScreen8/WheelNative.cpp",
+    "PulsarEngine/SplitScreen8/WheelNative.hpp"
   ]
 }
