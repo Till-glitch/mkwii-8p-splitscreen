@@ -177,7 +177,7 @@ class DolphinRun:
                 archive = self.layout.dolphin_log.with_name(f"dolphin.bridge-{time.time_ns()}.log")
                 self.layout.dolphin_log.replace(archive)  # A failed rotation aborts before launch.
             command = [str(self.executable), "-u", str(self.layout.dolphin),
-                       "-C", "GFX.Settings.InternalResolution=1", "-e", str(self.layout.launch)]
+                       "-C", "Graphics.Settings.InternalResolution=1", "-e", str(self.layout.launch)]
             self.proc = self.process_factory(command, cwd=ROOT)
             self.created = self.install.process_created(self.proc.pid)
             if self.created is None or not self.install.dolphin_alive(self.proc.pid, self.created):

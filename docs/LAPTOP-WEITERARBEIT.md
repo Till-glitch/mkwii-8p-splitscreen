@@ -49,3 +49,18 @@ Der vorhandene ESP32 ist bereits mit der neuen Firmware geflasht. Ein Rechnerwec
 Im isolierten Dolphin-Profil die vier nativen Wiimotes für P1–P4 konfigurieren. Danach zuerst die kombinierte Nutzung mit ESP32-Wiimotes prüfen: unabhängige Anmeldung, Lenkung, Items, Stunts, Pause und Wiederverbinden. Acht echte Geräte und die Leistungsabnahme auf dem Laptop stehen noch aus. Die sichtbare Stuntkorrektur wurde auf dem Entwicklungs-PC vom Nutzer bestätigt.
 
 Nachfolgende Agents lesen zuerst [IMPLEMENTIERUNGSSTAND.md](IMPLEMENTIERUNGSSTAND.md). Dort stehen Änderungen, Prüfergebnisse und die nächsten offenen Schritte.
+
+## Wenn das Spiel zu langsam läuft
+
+FPS und Emulationsgeschwindigkeit getrennt beurteilen: Das unveränderte Mario Kart Wii rendert bei drei/vier Spielern normalerweise 30 FPS. Eine Dolphin-Anzeige von 50 % bedeutet dagegen tatsächliche halbe Emulationsgeschwindigkeit.
+
+Für einen vergleichbaren Basistest im tatsächlich gestarteten isolierten Profil:
+
+1. Laptop am Netzteil betreiben, Windows-Energiemodus auf beste Leistung stellen und Dolphins Geschwindigkeitslimit auf 100 %/Normal prüfen.
+2. V-Sync zunächst ausschalten und die Windows-Bildschirmfrequenz prüfen. Dolphin nennt V-Sync bei 30-Hz-Bildschirmen ausdrücklich als mögliche Ursache exakt halber Geschwindigkeit.
+3. Interne Auflösung 1× nativ, Kantenglättung aus, keine HD-Texturen/Postprocessing. Auf Intel Iris Xe zuerst Direct3D 12 testen, danach dieselbe Szene mit Direct3D 11 vergleichen. CPU-Taktüberschreibung für diesen Basistest deaktiviert lassen; CPU-Engine auf Standard/JIT und Audio auf DSP-HLE belassen. Dual Core prüfen.
+4. Dieselbe Strecke zuerst unverändert mit vier Spielern, dann mit unserem Build vergleichen. Geschwindigkeit, interne Auflösung und Backend notieren. Erst danach acht Spieler beurteilen. Eine Entlastung durch geringere Auflösung deutet auf Grafiklast; unveränderte Geschwindigkeit allein beweist noch keine reine CPU-Grenze.
+
+Am 31.10.2026 wurde ein Starterfehler korrigiert: Kommandozeilen-Overrides benötigen `Graphics.Settings.InternalResolution`, obwohl die Konfigurationsdatei `GFX.ini` heißt. Der alte `GFX`-Override konnte die beabsichtigte native Auflösung nicht durchsetzen. Nach `git pull --ff-only` den Starter neu ausführen; ein neuer Gastbuild oder ESP32-Flash ist für diese Korrektur nicht nötig. Bereits gespeicherte Grafikprofile werden nicht überschrieben.
+
+Primärquellen: [Dolphin-Konfigurationsnamen, Version 2609a](https://github.com/dolphin-emu/dolphin/blob/2609a/Source/Core/Common/Config/Config.cpp), [Dolphin-Leistungsleitfaden](https://dolphin-emu.org/docs/guides/performance-guide/), [Mario Kart Wii im Dolphin-Wiki](https://wiki.dolphin-emu.org/index.php?title=Mario_Kart_Wii).

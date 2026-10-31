@@ -134,6 +134,13 @@ class RunnerFixture(unittest.TestCase):
         self.assertEqual(len(archived), 1)
         self.assertEqual(archived[0].read_text(), "old log")
 
+    def test_native_resolution_override_uses_dolphin_graphics_system_name(self):
+        with self.make_run():
+            command = self.launches[0][0]
+            overrides = [command[i + 1] for i, token in enumerate(command) if token == "-C"]
+            self.assertIn("Graphics.Settings.InternalResolution=1", overrides)
+            self.assertFalse(any(value.startswith("GFX.") for value in overrides))
+
     def test_leave_running_is_explicit_and_keeps_pid_record(self):
         with self.make_run(leave_running=True):
             pass

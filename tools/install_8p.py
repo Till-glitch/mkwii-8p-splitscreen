@@ -1030,7 +1030,7 @@ def cmd_dolphin(layout: Layout, args) -> None:
     # Unattended runs render at native resolution with no anisotropy, so 8 views keep a smoke case
     # inside its timeouts; the owner's launches keep the owner's GFX.ini (owner, 2026-10-05).
     if args.unattended:
-        cmd += ["-C", f"GFX.Settings.InternalResolution={args.res}", "-C", "GFX.Enhancements.MaxAnisotropy=0"]
+        cmd += ["-C", f"Graphics.Settings.InternalResolution={args.res}", "-C", "Graphics.Enhancements.MaxAnisotropy=0"]
     # D114: a menu script counts game frames, so unlimited speed changes no lane's timing. Not for a lane that
     # checks sound or shoots at a wall-clock time.
     if args.fast:
